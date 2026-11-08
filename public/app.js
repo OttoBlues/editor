@@ -1,7 +1,6 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const elements = {
   list: $('#file-list'),
-  count: $('#file-count'),
   panes: $('#panes'),
   target: $('#assistant-target'),
   prompt: $('#assistant-prompt'),
@@ -87,9 +86,12 @@ function makeFileItem(file) {
   info.className = 'file-item-info';
   const name = document.createElement('strong');
   name.textContent = file.name;
-  const type = document.createElement('span');
-  type.textContent = !file.accessible ? '链接或不可访问' : file.type === 'markdown' ? 'Markdown 文档' : file.type === 'text' ? '纯文本文档' : '不支持的文件类型';
-  info.append(name, type);
+  info.append(name);
+  if (!file.accessible || !file.type) {
+    const status = document.createElement('span');
+    status.textContent = !file.accessible ? '链接或不可访问' : '不支持的文件类型';
+    info.append(status);
+  }
   const arrow = document.createElement('span');
   arrow.className = 'file-item-arrow';
   arrow.textContent = '›';
@@ -103,7 +105,6 @@ function makeFileItem(file) {
 }
 
 function renderFiles() {
-  elements.count.textContent = String(state.files.length).padStart(2, '0');
   elements.list.replaceChildren();
   if (!state.files.length) {
     const message = document.createElement('p');
@@ -129,6 +130,7 @@ function setSuggestionAvailability() {
   const suggestion = state.suggestion;
   if (!suggestion) return;
   const pane = state.panes[suggestion.paneIndex];
+  elements.description.hidden = state.active === suggestion.paneIndex;
   let reason = '';
   if (!pane.document || pane.document.name !== suggestion.name) reason = '目标文件已关闭，请重新生成建议。';
   else if (state.active !== suggestion.paneIndex) reason = '请先切回生成建议的编辑区。';
@@ -150,8 +152,8 @@ function renderPane(pane) {
   $('.pane-index', root).textContent = paneName(pane);
   $('.filename', root).textContent = doc?.name || '未打开文件';
   $('.file-meta', root).textContent = doc
-    ? (doc.type === 'markdown' ? 'Markdown' : '纯文本') + ' · ' + doc.encoding + ' · ' + (doc.newline === 'none' ? '无换行' : doc.newline === 'mixed' ? '混合换行' : doc.newline)
-    : '从文件列表选择';
+    ? doc.encoding + ' · ' + (doc.newline === 'none' ? '无换行' : doc.newline === 'mixed' ? '混合换行' : doc.newline)
+    : '';
   $('.dirty-dot', root).hidden = !isDirty;
   $('.close-pane', root).disabled = !doc || pane.loading || pane.saving;
   const save = $('.save-button', root);
@@ -159,11 +161,11 @@ function renderPane(pane) {
   save.textContent = pane.saving ? '保存中' : '保存';
   const editButton = $('.edit-mode', root);
   const previewButton = $('.preview-mode', root);
+  $('.pane-toolbar', root).hidden = !doc || doc.type !== 'markdown';
   editButton.disabled = !doc;
   editButton.classList.toggle('selected', pane.mode === 'edit');
   previewButton.hidden = !doc || doc.type !== 'markdown';
   previewButton.classList.toggle('selected', pane.mode === 'preview');
-  $('.type-label', root).textContent = doc ? (doc.type === 'markdown' ? 'MARKDOWN' : 'PLAIN TEXT') : '';
   const warning = $('.pane-warning', root);
   warning.textContent = pane.error || doc?.warning || '';
   warning.hidden = !warning.textContent;
@@ -178,7 +180,7 @@ function renderPane(pane) {
   if (!preview.hidden) renderMarkdown(preview, pane.content);
   const paneState = $('.pane-state', root);
   paneState.classList.toggle('is-dirty', isDirty);
-  paneState.textContent = pane.loading ? '正在打开…' : !doc ? '等待打开文件' : !doc.editable ? '只读' : isDirty ? '● 未保存的更改' : '已保存';
+  paneState.textContent = pane.loading ? '正在打开…' : !doc ? '' : !doc.editable ? '只读' : isDirty ? '● 未保存的更改' : '已保存';
   $('.pane-stats', root).textContent = doc ? pane.content.length + ' 字符' : '';
 }
 
@@ -439,7 +441,7 @@ function generateSuggestion() {
   }
   const after = simulate(pane.content, prompt, pane.document.type);
   state.suggestion = { paneIndex: pane.index, name: pane.document.name, before: pane.content, after, prompt };
-  elements.description.textContent = '针对 ' + paneName(pane) + ' · ' + pane.document.name + ' 的规则演示。绿色为新增，红色为移除。';
+  elements.description.textContent = '建议目标：' + paneName(pane) + ' · ' + pane.document.name;
   renderDiff(pane.content, after);
   elements.suggestion.hidden = false;
   setSuggestionAvailability();
