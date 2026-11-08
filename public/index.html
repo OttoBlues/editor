@@ -47,6 +47,19 @@
           <section class="editors-section" data-i18n-aria="editor">
             <div id="panes" class="panes"><div id="pane-divider" class="pane-divider" role="separator" tabindex="0" aria-orientation="vertical" aria-valuemin="20" aria-valuemax="80" aria-valuenow="50" data-i18n-aria="resize" hidden></div></div>
             <button id="split-toggle" class="icon-button layout-button" type="button" data-active="false" aria-pressed="false" data-i18n-aria="openSplit"><svg class="icon" aria-hidden="true"><use href="#i-split"></use></svg><span class="layout-dirty" aria-hidden="true" hidden></span></button>
+            <section id="change-review" class="change-review" aria-labelledby="review-file" hidden>
+              <header class="review-heading"><button id="review-back" class="text-button" type="button" data-i18n="backToFile">返回文件</button><strong id="review-file"></strong><span id="review-status" role="status"></span></header>
+              <div class="review-scroll" tabindex="0" data-i18n-aria="diff">
+                <div class="review-grid">
+                  <div class="review-toolbars">
+                    <div class="review-toolbar"><strong data-i18n="beforeChange">改动前</strong></div>
+                    <div class="review-toolbar"><strong data-i18n="afterChange">改动后</strong><div class="review-actions"><button id="review-edit" class="secondary-button" type="button" data-i18n="edit">编辑</button><button id="review-save" class="secondary-button" type="button" data-i18n="save">保存</button><button id="review-apply" class="decision-button accept" type="button" data-i18n="applyChange">应用</button><button id="review-discard" class="decision-button reject" type="button" data-i18n="discardChange">放弃</button></div></div>
+                  </div>
+                  <div id="review-lines"></div>
+                </div>
+              </div>
+              <p id="review-notice" class="review-notice"></p>
+            </section>
           </section>
           <aside class="assistant-panel" aria-labelledby="assistant-title">
             <div class="assistant-heading"><div class="spark-icon"><svg class="icon"><use href="#i-spark"></use></svg></div><h2 id="assistant-title" data-i18n="assistant">智能编辑</h2></div>
@@ -67,7 +80,7 @@
               <div class="composer"><textarea id="assistant-prompt" class="prompt-input" maxlength="2000"></textarea><button id="generate" class="composer-send icon-button" type="button" data-i18n-aria="sendRequest" data-i18n-title="sendRequest"><svg class="icon" aria-hidden="true"><use href="#i-arrow"></use></svg></button></div>
             </section>
             <section class="context-section" aria-labelledby="reply-heading"><h3 id="reply-heading" data-i18n="modelReply">模型回复</h3><div id="model-replies" class="activity-list" aria-live="polite"></div></section>
-            <section class="context-section" aria-labelledby="tracking-heading"><h3 id="tracking-heading" data-i18n="changeTracking">修改内容追踪</h3><div id="change-history" class="activity-list"></div></section>
+            <section class="context-section" aria-labelledby="tracking-heading"><h3 id="tracking-heading" data-i18n="changeTracking">已变动</h3><div id="change-history" class="activity-list"></div></section>
           </aside>
         </section>
 
@@ -135,6 +148,7 @@
         <label for="focus-annotation" class="field-label" data-i18n="focusAnnotation">说明</label>
         <div class="composer"><textarea id="focus-annotation" class="prompt-input focus-annotation" maxlength="2000" required></textarea><button id="set-focus" type="button" class="composer-send icon-button" data-i18n-aria="createFocus" data-i18n-title="createFocus"><svg class="icon" aria-hidden="true"><use href="#i-arrow"></use></svg></button></div>
         <p id="focus-error" class="context-warning" role="status" hidden></p>
+        <section class="document-focus-section" aria-labelledby="document-focus-heading"><h3 id="document-focus-heading" data-i18n="documentFocuses">已有聚焦</h3><div id="document-focus-list"></div></section>
       </div>
     </aside>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>

@@ -1,6 +1,6 @@
 import { blocksPage, plugins, pluginFor, supportsContext } from './plugins.js';
 import { readLocalFile, localFileBlob } from './local-files.js';
-import { suggestForAttention, SuggestionError } from './assistant.js';
+import { suggestForAttention, SuggestionError, compareLines, mapReviewOffset, editProblem, resolveEdit } from './assistant.js';
 import { focusRanges, rangesOverlap, validFocus, focusCanvasBlocks } from './focus.js';
 import { translate, serverMessage } from './i18n.js';
 
@@ -53,6 +53,7 @@ const state = {
   contextRevision: 0,
   activity: [],
   nextActivityId: 1,
+  review: null,
   pluginConfigId: null,
   pluginSettings: Object.fromEntries(plugins.map(plugin => [plugin.id, { focusMode: preferences.plugins?.[plugin.id]?.focusMode === 'selection' ? 'selection' : 'structure' }])),
   nextTabId: 1,
@@ -213,21 +214,27 @@ async function refreshFiles() {
   }
 }
 
-function activityProblem(record) {
-  if (record.applied) return '';
-  if (record.contextRevision !== state.contextRevision) return t('contextChanged');
-  if (record.prompt !== elements.prompt.value.trim()) return t('requestChanged');
-  const referenceProblem = state.focuses.filter(focus => focus.role === 'reference').map(focusProblem).find(Boolean);
-  if (referenceProblem) return referenceProblem;
-  for (const edit of record.edits) {
-    const tab = findTab(edit.tabId)?.tab;
-    if (!tab?.document) return t('targetClosed');
-    if (!state.attentions.includes(tab.id)) return t('attentionRequired');
-    if (tab.content !== edit.before) return t('contentChanged');
-    if (!tab.document.editable) return t('cannotEdit');
-    if (tab.saving) return t('savingWait');
+function pendingEdit(tabId) {
+  for (const record of [...state.activity].reverse()) {
+    const edit = record.edits.find(edit => edit.tabId === tabId && edit.status === 'pending');
+    if (edit) return edit;
   }
-  return record.edits.some(edit => edit.before !== edit.after) ? '' : t('noChangeNeeded');
+  return null;
+}
+
+function acceptPending(tab, textarea = null) {
+  const edit = tab && pendingEdit(tab.id);
+  if (!edit) return true;
+  const start = textarea ? mapReviewOffset(edit.before, edit.after, textarea.selectionStart) : 0;
+  const end = textarea ? mapReviewOffset(edit.before, edit.after, textarea.selectionEnd) : 0;
+  if (!resolveEdit(edit, tab, 'apply', state.attentions)) {
+    toast(t(edit.problem || 'savingWait'), true);
+    renderActivity();
+    return edit.status === 'expired';
+  }
+  state.contextRevision++;
+  if (textarea) { textarea.value = tab.content; textarea.setSelectionRange(start, end); }
+  return true;
 }
 
 function setSuggestionAvailability() {
@@ -397,7 +404,7 @@ function renderPane(pane) {
     ? doc.encoding + ' · ' + (doc.newline === 'none' ? t('noNewline') : doc.newline === 'mixed' ? t('mixedNewline') : doc.newline)
     : '';
   const save = $('.save-button', root);
-  save.disabled = !doc || !doc.editable || !isDirty || tab.saving;
+  save.disabled = !doc || !doc.editable || (!isDirty && !pendingEdit(tab.id)) || tab.saving;
   save.textContent = t(tab?.saving ? 'saving' : doc?.source === 'local' ? 'saveCopy' : 'save');
   const editButton = $('.edit-mode', root);
   const previewButton = $('.preview-mode', root);
@@ -450,6 +457,7 @@ function renderAll() {
   renderFiles();
   renderContext();
   setSuggestionAvailability();
+  renderReview();
 }
 
 function makePane(pane) {
@@ -499,6 +507,10 @@ function makePane(pane) {
     if (selectionChanged && state.focusTabId === tab.id && state.focusMode === 'selection') renderFocusPicker();
   }
   for (const event of ['select', 'keyup', 'click', 'scroll']) textarea.addEventListener(event, rememberPosition);
+  textarea.addEventListener('beforeinput', event => {
+    if (!acceptPending(activeTab(pane), textarea)) event.preventDefault();
+  });
+  textarea.addEventListener('compositionstart', () => acceptPending(activeTab(pane), textarea));
   textarea.addEventListener('input', () => {
     const tab = activeTab(pane);
     if (!tab) return;
@@ -514,6 +526,7 @@ function makePane(pane) {
   textarea.addEventListener('keydown', (event) => {
     if (event.key !== 'Tab' || textarea.readOnly) return;
     event.preventDefault();
+    if (!acceptPending(activeTab(pane), textarea)) return;
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
     textarea.setRangeText('  ', start, end, 'end');
@@ -536,6 +549,7 @@ function makePane(pane) {
 
 function selectTab(pane, id) {
   if (!pane.tabs.some((tab) => tab.id === id)) return;
+  state.review = null;
   closeFocusPicker();
   state.active = pane.index;
   pane.activeTabId = id;
@@ -697,7 +711,10 @@ function closeTab(pane, id) {
   if (index < 0) return;
   const tab = pane.tabs[index];
   if (tab.saving) return;
-  if (dirty(tab) && !window.confirm(t('discard', { pane: paneName(pane), name: tab.document.name }))) return;
+  if ((dirty(tab) || pendingEdit(id)) && !window.confirm(t('discard', { pane: paneName(pane), name: tab.document.name }))) return;
+  const pending = pendingEdit(id);
+  if (pending) { pending.status = 'expired'; pending.problem = 'targetClosed'; }
+  if (currentReviewEdit()?.tabId === id) state.review = null;
   for (const reference of state.references) {
     if (reference.sourceTabId === id) reference.sourcePane = pane.index;
   }
@@ -719,7 +736,8 @@ function closeTab(pane, id) {
 }
 
 async function saveTab(pane, tab) {
-  if (!tab?.document || !dirty(tab) || tab.saving || !tab.document.editable) return;
+  if (!tab?.document || tab.saving || !tab.document.editable) return;
+  if (!acceptPending(tab) || !dirty(tab)) { renderAll(); return; }
   const snapshot = tab.content;
   const doc = tab.document;
   tab.saving = true;
@@ -1092,6 +1110,8 @@ function renderFocusCanvas(pane) {
 let focusAnchor = null;
 function openFocusPicker(tab, button) {
   if (!supportsContext(tab.document?.type, 'focus')) return;
+  state.review = null;
+  renderReview();
   if (!elements.focusPicker.hidden && state.focusTabId === tab.id) return closeFocusPicker(true);
   closeFocusPicker();
   state.focusTabId = tab.id;
@@ -1186,8 +1206,47 @@ function renderFocusPicker() {
   elements.setFocus.disabled = !state.focusSelected.length || !annotation || annotation.length > 2000 || Boolean(problem);
   elements.setFocus.setAttribute('aria-label', t(state.focusEditingId ? 'saveFocus' : 'createFocus'));
   elements.setFocus.title = t(state.focusEditingId ? 'saveFocus' : 'createFocus');
+  renderDocumentFocuses();
   dockFocusPicker();
   for (const pane of state.panes) renderFocusCanvas(pane);
+}
+
+function renderDocumentFocuses() {
+  const list = $('#document-focus-list');
+  const existing = new Map([...list.querySelectorAll('details')].map(node => [node.dataset.focusId, node.open]));
+  list.replaceChildren();
+  const focuses = state.focuses.filter(focus => focus.sourceKind === 'tab' && focus.sourceId === state.focusTabId);
+  if (!focuses.length) {
+    const empty = document.createElement('p'); empty.className = 'context-empty'; empty.textContent = t('noFocus'); list.append(empty);
+  }
+  for (const focus of focuses) {
+    const details = document.createElement('details'); details.className = 'document-focus'; details.dataset.focusId = String(focus.id);
+    details.open = existing.get(String(focus.id)) ?? true;
+    const summary = document.createElement('summary'); summary.textContent = t('focusDetailTitle', { n: focus.id, count: focusRanges(focus).length });
+    const note = document.createElement('p'); note.className = 'saved-focus-note'; note.textContent = focus.annotation;
+    details.append(summary, note);
+    const warning = focusProblem(focus);
+    if (warning) { const message = document.createElement('p'); message.className = 'context-warning'; message.textContent = warning; details.append(message); }
+    for (const range of focusRanges(focus)) {
+      const label = document.createElement('p'); label.className = 'saved-focus-range';
+      label.textContent = t('focusDetailLines', { start: range.line, end: focus.documentSnapshot.slice(0, Math.max(range.start, range.end - 1)).split('\n').length });
+      const source = document.createElement('pre'); source.className = 'saved-focus-source'; source.textContent = range.text;
+      details.append(label, source);
+    }
+    const actions = document.createElement('div'); actions.className = 'saved-focus-actions';
+    const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'text-button'; edit.textContent = t('editFocus');
+    edit.addEventListener('click', () => editFocus(focus, edit));
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'text-button'; remove.textContent = t('removeFocusDetail');
+    remove.addEventListener('click', () => {
+      state.focuses = state.focuses.filter(item => item.id !== focus.id);
+      state.contextRevision++;
+      if (state.focusEditingId === focus.id) {
+        state.focusEditingId = null; state.focusSelected = []; elements.focusAnnotation.value = '';
+      }
+      renderAll();
+    });
+    actions.append(edit, remove); details.append(actions); list.append(details);
+  }
 }
 
 async function openFocusedSource(focus) {
@@ -1202,7 +1261,10 @@ async function openFocusedSource(focus) {
     showContextTab(found);
   }
   if (!found) return;
-  if (found.tab.content !== focus.documentSnapshot) return toast(t('focusSnapshotNotice'), true);
+  if (found.tab.content !== focus.documentSnapshot) {
+    openFocusPicker(found.tab, $('#add-focus'));
+    return toast(t('focusSnapshotNotice'), true);
+  }
   // A textarea cannot represent disjoint highlights. Show all exact ranges in
   // the content view and the group's shared instructions instead.
   editFocus(focus, elements.focusList.querySelector('[data-card-id="' + focus.id + '"] .context-edit'));
@@ -1243,40 +1305,100 @@ function setFocus() {
   const anchor = focusAnchor;
   closeFocusPicker();
   renderAll();
-  if (anchor?.isConnected) anchor.focus();
-  else if (editingId) elements.focusList.querySelector('[data-card-id="' + editingId + '"] .context-edit')?.focus();
+  const tab = findTab(source.id)?.tab;
+  if (tab) openFocusPicker(tab, anchor?.isConnected ? anchor : $('#add-focus'));
 }
 
-function addDiffRow(container, kind, text) {
-  const row = document.createElement('div');
-  row.className = 'diff-row ' + kind;
-  row.textContent = (kind === 'added' ? '+ ' : kind === 'removed' ? '− ' : '  ') + text;
-  container.append(row);
+function currentReviewEdit() {
+  const record = state.activity.find(record => record.id === state.review?.recordId);
+  return record?.edits[state.review?.editIndex] || null;
 }
 
-function renderDiff(container, before, after) {
+function changeStatus(edit) {
+  if (edit.status === 'discarded') return 'trackedDiscarded';
+  if (edit.status === 'expired') return 'trackedExpired';
+  const tab = findTab(edit.tabId)?.tab;
+  if (edit.status === 'pending') return editProblem(edit, tab, state.attentions) ? 'trackedExpired' : 'trackedPending';
+  return !tab ? 'trackedClosed' : tab.content !== edit.after ? 'trackedEdited' : tab.base === edit.after ? 'trackedSaved' : 'trackedApplied';
+}
+
+function openChange(record, editIndex) {
+  const edit = record.edits[editIndex];
+  const found = findTab(edit.tabId);
+  if (found) showContextTab(found);
+  else setView('workspace');
+  state.review = { recordId: record.id, editIndex };
+  closeFocusPicker();
+  renderAll();
+  $('#review-back').focus({ preventScroll: true });
+}
+
+function renderReview() {
+  const edit = currentReviewEdit();
+  const root = $('#change-review');
+  root.hidden = !edit;
+  elements.panes.hidden = Boolean(edit);
+  elements.split.hidden = Boolean(edit);
+  if (!edit) return;
+  const tab = findTab(edit.tabId)?.tab;
+  const problem = edit.status === 'pending' ? editProblem(edit, tab, state.attentions) : edit.problem;
+  $('#review-file').textContent = edit.name;
+  $('#review-status').textContent = t(changeStatus(edit));
+  $('#review-apply').hidden = $('#review-discard').hidden = edit.status !== 'pending';
+  $('#review-apply').disabled = Boolean(problem);
+  $('#review-edit').disabled = !tab?.document?.editable || Boolean(tab.saving);
+  $('#review-save').disabled = !tab?.document?.editable || Boolean(tab.saving) || (!dirty(tab) && edit.status !== 'pending');
+  $('#review-save').textContent = t(tab?.document?.source === 'local' ? 'saveCopy' : 'save');
+  $('#review-notice').textContent = problem ? t(problem) : t(edit.status === 'pending' ? 'autoApplyNotice' : edit.status === 'discarded' ? 'discardedNotice' : 'reviewLegend');
+  const key = state.review.recordId + ':' + state.review.editIndex + ':' + state.language;
+  const container = $('#review-lines');
+  if (container.dataset.review === key) return;
+  container.dataset.review = key;
   container.replaceChildren();
-  if (before === after) return addDiffRow(container, 'context', t('noChanges'));
-  const oldLines = before.split('\n');
-  const newLines = after.split('\n');
-  let prefix = 0;
-  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix += 1;
-  let suffix = 0;
-  while (suffix < oldLines.length - prefix && suffix < newLines.length - prefix && oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]) suffix += 1;
-  if (prefix > 2) addDiffRow(container, 'context', '…');
-  for (const line of oldLines.slice(Math.max(0, prefix - 2), prefix)) addDiffRow(container, 'context', line);
-  for (const line of oldLines.slice(prefix, oldLines.length - suffix)) addDiffRow(container, 'removed', line);
-  for (const line of newLines.slice(prefix, newLines.length - suffix)) addDiffRow(container, 'added', line);
-  for (const line of oldLines.slice(oldLines.length - suffix, oldLines.length - suffix + Math.min(suffix, 2))) addDiffRow(container, 'context', line);
-  if (suffix > 2) addDiffRow(container, 'context', '…');
+  for (const pair of compareLines(edit.before, edit.after)) {
+    const row = document.createElement('div'); row.className = 'review-line-pair';
+    for (const side of ['left', 'right']) {
+      const cell = pair[side];
+      const line = document.createElement('div'); line.className = 'review-line ' + (cell?.kind || 'gap'); line.dataset.side = side;
+      if (cell) {
+        const number = document.createElement('span'); number.className = 'review-line-number'; number.textContent = cell.number; number.setAttribute('aria-hidden', 'true');
+        const code = document.createElement('span'); code.className = 'review-code'; code.textContent = cell.text;
+        line.append(number, code);
+        if (cell.kind !== 'context') line.title = t(cell.kind === 'modified' ? 'modified' : cell.kind === 'added' ? 'added' : 'removed');
+      } else line.setAttribute('aria-hidden', 'true');
+      row.append(line);
+    }
+    container.append(row);
+  }
+  $('.review-scroll').scrollTop = 0;
+}
+
+function finishReview(decision) {
+  const edit = currentReviewEdit();
+  if (!edit) return;
+  const tab = findTab(edit.tabId)?.tab;
+  if (!resolveEdit(edit, tab, decision, state.attentions)) {
+    toast(t(edit.problem || 'savingWait'), true); renderAll(); return;
+  }
+  if (decision === 'apply') state.contextRevision++;
+  state.review = null;
+  renderAll();
+}
+
+function leaveReviewForEdit() {
+  const edit = currentReviewEdit();
+  const found = edit && findTab(edit.tabId);
+  if (!found) return;
+  if (!acceptPending(found.tab)) return;
+  state.review = null;
+  found.tab.mode = 'edit';
+  renderAll();
+  $('.editor-input', found.pane.element).focus();
 }
 
 function renderActivity() {
   const replies = $('#model-replies');
   const history = $('#change-history');
-  // Preserve expanded diffs while editing the request or updating file state.
-  const expanded = new Set([...history.querySelectorAll('details[open]')].map(item => item.dataset.change));
-  const existing = new Set([...history.querySelectorAll('details')].map(item => item.dataset.change));
   replies.replaceChildren(); history.replaceChildren();
   function empty(container, key) { const p = document.createElement('p'); p.className = 'context-empty'; p.textContent = t(key); container.append(p); }
   if (!state.activity.length) { empty(replies, 'noReplies'); empty(history, 'noTrackedChanges'); return; }
@@ -1287,27 +1409,14 @@ function renderActivity() {
     const content = document.createElement('p'); content.textContent = record.error ? t(record.error) : t('demoReply', { n: record.edits.filter(edit => edit.before !== edit.after).length });
     reply.append(time, request, content); replies.append(reply);
     if (!record.edits?.length) continue;
-    const batch = document.createElement('article'); batch.className = 'change-batch'; batch.dataset.batch = record.id;
     for (const [index, edit] of record.edits.entries()) {
-      const details = document.createElement('details'); details.className = 'change-entry'; details.dataset.change = record.id + ':' + index;
-      details.open = expanded.has(details.dataset.change) || (!existing.has(details.dataset.change) && record === state.activity.at(-1));
-      const summary = document.createElement('summary');
-      const name = document.createElement('span'); name.textContent = edit.name;
-      const status = document.createElement('span'); status.className = 'change-status';
-      const current = findTab(edit.tabId)?.tab;
-      status.textContent = t(record.applied ? !current ? 'trackedClosed' : current.content !== edit.after ? 'trackedEdited' : current.base === edit.after ? 'trackedSaved' : 'trackedApplied' : edit.before === edit.after ? 'noChanges' : activityProblem(record) ? 'trackedExpired' : 'trackedPending');
-      summary.append(name, status);
-      const diff = document.createElement('div'); diff.className = 'diff'; diff.setAttribute('aria-label', t('diff'));
-      renderDiff(diff, edit.before, edit.after);
-      details.append(summary, diff); batch.append(details);
+      if (edit.before === edit.after) continue;
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'changed-file';
+      button.textContent = edit.name; button.dataset.change = record.id + ':' + index;
+      button.title = edit.name + ' · ' + t(changeStatus(edit));
+      button.addEventListener('click', () => openChange(record, index));
+      history.append(button);
     }
-    if (!record.applied && record.edits.some(edit => edit.before !== edit.after)) {
-      const reason = activityProblem(record);
-      const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'apply-button'; apply.textContent = t('applyAttention'); apply.disabled = Boolean(reason); apply.addEventListener('click', () => applySuggestion(record));
-      const note = document.createElement('p'); note.className = 'apply-note'; note.textContent = reason || t('notAutosaved');
-      batch.append(apply, note);
-    }
-    history.append(batch);
   }
   if (!history.children.length) empty(history, 'noTrackedChanges');
 }
@@ -1315,29 +1424,24 @@ function renderActivity() {
 function generateSuggestion() {
   if ($('#generate').disabled) return;
   const prompt = elements.prompt.value.trim();
-  const record = { id: state.nextActivityId++, prompt, createdAt: new Date().toISOString(), contextRevision: state.contextRevision, edits: [], applied: false };
+  // Starting the next assistant edit confirms earlier proposals for its targets.
+  const targets = prompt ? state.attentions : state.attentions.filter(id => state.focuses.some(focus => focus.role === 'target' && focus.sourceKind === 'tab' && focus.sourceId === id && focus.annotation?.trim()));
+  for (const id of targets) {
+    const tab = findTab(id)?.tab;
+    if (tab && !acceptPending(tab)) return;
+  }
+  state.review = null;
+  const record = { id: state.nextActivityId++, prompt, createdAt: new Date().toISOString(), edits: [] };
   const documents = state.panes.flatMap(pane => pane.tabs.filter(tab => tab.document).map(tab => ({ id: tab.id, name: tab.document.name, type: tab.document.type, editable: tab.document.editable, content: tab.content })));
   try {
     record.edits = suggestForAttention({ documents, attentionIds: state.attentions, focuses: state.focuses, references: state.references.map(reference => reference.content), prompt, language: state.language });
+    for (const edit of record.edits) edit.status = edit.before === edit.after ? 'unchanged' : 'pending';
   } catch (error) {
     if (!(error instanceof SuggestionError)) throw error;
     record.error = ({ no_attention: 'attentionRequired', invalid_target: 'cannotEdit', empty_request: 'enterRequest', reference_required: 'referenceRequired', stale_focus: 'focusStale', too_large: 'tooLarge' })[error.code] || 'requestFailed';
   }
   state.activity.push(record);
-  setSuggestionAvailability();
-}
-
-function applySuggestion(record) {
-  if (record.applied || activityProblem(record)) return setSuggestionAvailability();
-  closeFocusPicker();
-  for (const edit of record.edits) {
-    const tab = findTab(edit.tabId).tab;
-    tab.content = edit.after; tab.mode = 'edit'; tab.error = '';
-  }
-  record.applied = true;
-  state.contextRevision += 1;
   renderAll();
-  toast(t('appliedAttention', { n: record.edits.filter(edit => edit.before !== edit.after).length }));
 }
 
 function renderPlugins() {
@@ -1364,6 +1468,7 @@ function renderPlugins() {
 }
 
 function setView(view) {
+  state.review = null;
   state.view = view;
   for (const name of ['workspace', 'plugins', 'models', 'settings']) {
     $('#' + name + '-view').hidden = name !== view;
@@ -1415,7 +1520,17 @@ elements.divider.addEventListener('keydown', (event) => {
 });
 window.addEventListener('resize', updateDividerOrientation);
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') closeFocusPicker(true);
+  if (event.key === 'Escape') {
+    if (state.review) { state.review = null; renderAll(); }
+    else closeFocusPicker(true);
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault();
+    if (state.view !== 'workspace') return;
+    const edit = currentReviewEdit();
+    const found = edit ? findTab(edit.tabId) : { pane: state.panes[state.active], tab: activeTab(state.panes[state.active]) };
+    if (found) saveTab(found.pane, found.tab);
+  }
 });
 window.addEventListener('resize', dockFocusPicker);
 const focusLayoutObserver = new ResizeObserver(dockFocusPicker);
@@ -1435,6 +1550,14 @@ $('#focus-previous').addEventListener('click', () => { if (state.focusPage > 0) 
 $('#focus-next').addEventListener('click', () => { if (state.focusHasNext) { state.focusPage += 1; renderFocusPicker(); } });
 elements.setFocus.addEventListener('click', setFocus);
 $('#generate').addEventListener('click', generateSuggestion);
+$('#review-back').addEventListener('click', () => { state.review = null; renderAll(); });
+$('#review-apply').addEventListener('click', () => finishReview('apply'));
+$('#review-discard').addEventListener('click', () => finishReview('discard'));
+$('#review-edit').addEventListener('click', leaveReviewForEdit);
+$('#review-save').addEventListener('click', () => {
+  const found = findTab(currentReviewEdit()?.tabId);
+  if (found) saveTab(found.pane, found.tab);
+});
 elements.prompt.addEventListener('input', setSuggestionAvailability);
 function sendOnEnter(event, send) {
   if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey || event.isComposing || event.keyCode === 229) return;
@@ -1458,7 +1581,7 @@ $('#plugin-focus-mode').addEventListener('change', event => {
   savePreferences();
 });
 window.addEventListener('beforeunload', (event) => {
-  if (state.panes.some((pane) => pane.tabs.some(dirty))) {
+  if (state.panes.some((pane) => pane.tabs.some(tab => dirty(tab) || pendingEdit(tab.id)))) {
     event.preventDefault();
     event.returnValue = '';
   }

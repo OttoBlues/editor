@@ -113,3 +113,85 @@ export function suggestForAttention({ documents, attentionIds, focuses = [], ref
       after: suggest({ content: document.content, type: document.type, prompt, focuses: ranges, referenceText, language }) }];
   });
 }
+
+// Compare complete source lines, keeping unchanged islands between edits.
+function lines(content) {
+  return content.match(/[^\n]*\n|[^\n]+$/g) || [];
+}
+
+export function compareLines(before, after) {
+  const left = lines(before), right = lines(after);
+  const lengths = Array.from({ length: left.length + 1 }, () => new Uint16Array(right.length + 1));
+  for (let i = left.length - 1; i >= 0; i--) {
+    for (let j = right.length - 1; j >= 0; j--) lengths[i][j] = left[i] === right[j]
+      ? lengths[i + 1][j + 1] + 1 : Math.max(lengths[i + 1][j], lengths[i][j + 1]);
+  }
+  const rows = [];
+  let i = 0, j = 0, oldOffset = 0, newOffset = 0;
+  function cell(values, index, offset, kind) { return { text: values[index], number: index + 1, offset, kind }; }
+  while (i < left.length || j < right.length) {
+    if (i < left.length && j < right.length && left[i] === right[j]) {
+      rows.push({ left: cell(left, i, oldOffset, 'context'), right: cell(right, j, newOffset, 'context') });
+      oldOffset += left[i++].length; newOffset += right[j++].length;
+      continue;
+    }
+    const removed = [], added = [];
+    while (i < left.length || j < right.length) {
+      if (i < left.length && j < right.length && left[i] === right[j]) break;
+      if (i < left.length && (j === right.length || lengths[i + 1][j] >= lengths[i][j + 1])) {
+        removed.push(cell(left, i, oldOffset, 'removed')); oldOffset += left[i++].length;
+      } else {
+        added.push(cell(right, j, newOffset, 'added')); newOffset += right[j++].length;
+      }
+    }
+    for (let k = 0; k < Math.max(removed.length, added.length); k++) {
+      if (removed[k] && added[k]) { removed[k].kind = 'modified'; added[k].kind = 'modified'; }
+      rows.push({ left: removed[k] || null, right: added[k] || null });
+    }
+  }
+  return rows;
+}
+
+// Preserve the user's caret/selection when accepting a proposal before typing.
+export function mapReviewOffset(before, after, offset) {
+  offset = Math.max(0, Math.min(before.length, offset));
+  if (offset === before.length) return after.length;
+  const rows = compareLines(before, after);
+  const index = rows.findIndex(row => row.left && offset < row.left.offset + row.left.text.length);
+  if (index < 0) return after.length;
+  const { left, right } = rows[index];
+  if (!right) return rows.slice(index + 1).find(row => row.right)?.right.offset ?? after.length;
+  const local = offset - left.offset;
+  if (left.text === right.text) return right.offset + local;
+  let prefix = 0, suffix = 0;
+  while (prefix < left.text.length && prefix < right.text.length && left.text[prefix] === right.text[prefix]) prefix++;
+  while (suffix < left.text.length - prefix && suffix < right.text.length - prefix && left.text.at(-suffix - 1) === right.text.at(-suffix - 1)) suffix++;
+  if (local <= prefix) return right.offset + local;
+  if (local >= left.text.length - suffix) return right.offset + right.text.length - (left.text.length - local);
+  return right.offset + Math.min(local, right.text.length - suffix);
+}
+
+export function editProblem(edit, tab, attentionIds) {
+  if (!tab?.document || tab.id !== edit.tabId) return 'targetClosed';
+  if (!tab.document.editable) return 'cannotEdit';
+  if (tab.saving) return 'savingWait';
+  if (!attentionIds.includes(tab.id)) return 'attentionRequired';
+  if (tab.content !== edit.before) return 'contentChanged';
+  return '';
+}
+
+export function resolveEdit(edit, tab, decision, attentionIds) {
+  if (edit.status !== 'pending') return false;
+  if (decision === 'discard') { edit.status = 'discarded'; return true; }
+  if (decision !== 'apply') return false;
+  const problem = editProblem(edit, tab, attentionIds);
+  if (problem) {
+    if (problem !== 'savingWait') { edit.status = 'expired'; edit.problem = problem; }
+    return false;
+  }
+  tab.content = edit.after;
+  tab.mode = 'edit';
+  tab.error = '';
+  edit.status = 'applied';
+  return true;
+}
