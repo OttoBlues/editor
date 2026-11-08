@@ -16,6 +16,7 @@
       <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7zM19 15l.7 2.3L22 18l-2.3.7L19 21l-.7-2.3L16 18l2.3-.7z"/></symbol>
       <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M14 7l5 5-5 5"/></symbol>
       <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4.5 4.5L19 7"/></symbol>
+      <symbol id="i-split" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M12 4.5v15"/></symbol>
     </svg>
 
     <div class="app-shell">
@@ -32,7 +33,10 @@
       <main class="main-area">
         <header class="topbar">
           <h1>工作空间</h1>
-          <span class="connection"><span></span>本地运行</span>
+          <div class="topbar-actions">
+            <button id="split-toggle" class="layout-button" type="button" data-active="false" aria-label="打开分栏"><svg class="icon"><use href="#i-split"></use></svg><span class="layout-label">分栏</span><span class="layout-dirty" title="隐藏的编辑区有未保存的更改" hidden></span></button>
+            <span class="connection"><span></span>本地运行</span>
+          </div>
         </header>
         <div class="content-area">
           <div class="workspace-layout">
@@ -40,7 +44,7 @@
               <div id="panes" class="panes"></div>
             </section>
 
-            <aside class="assistant-card" aria-labelledby="assistant-title">
+            <aside class="assistant-panel" aria-labelledby="assistant-title">
               <div class="assistant-heading"><div class="spark-icon"><svg class="icon"><use href="#i-spark"></use></svg></div><div><h2 id="assistant-title">模拟助手</h2><p>基于规则 · 文件不上传</p></div></div>
               <div class="assistant-target"><span class="target-label">当前编辑区</span><span id="assistant-target" class="target-name">尚未选择文件</span></div>
               <label class="field-label" for="assistant-prompt">修改要求</label>
@@ -62,14 +66,17 @@
     </div>
 
     <template id="pane-template">
-      <article class="editor-card" tabindex="0">
-        <div class="pane-top"><div class="pane-label"><span class="pane-index"></span><span class="pane-active">当前窗口</span></div><button type="button" class="icon-button close-pane" title="关闭文件" aria-label="关闭文件"><svg class="icon"><use href="#i-close"></use></svg></button></div>
-        <div class="pane-file-heading"><div class="document-icon"><svg class="icon"><use href="#i-file"></use></svg></div><div class="pane-file-info"><div class="filename-row"><h3 class="filename"></h3><span class="dirty-dot" title="有未保存的更改" hidden></span></div><p class="file-meta"></p></div><button type="button" class="save-button">保存</button></div>
-        <div class="pane-toolbar"><div class="mode-switch"><button type="button" class="edit-mode">编辑</button><button type="button" class="preview-mode">预览</button></div></div>
+      <section class="editor-pane" tabindex="0">
+        <div class="tabbar"><div class="tab-list" role="tablist"></div><span class="pane-loading" hidden>正在打开…</span><span class="pane-indicator" aria-hidden="true" hidden></span></div>
+        <div class="pane-toolbar">
+          <div class="mode-switch"><button type="button" class="edit-mode">编辑</button><button type="button" class="preview-mode">预览</button></div>
+          <span class="file-meta"></span>
+          <button type="button" class="save-button">保存</button>
+        </div>
         <div class="pane-warning" hidden></div>
-        <div class="pane-body"><div class="empty-pane"><div class="empty-icon"><svg class="icon"><use href="#i-file"></use></svg></div><span>从文件列表选择</span></div><div class="editor-input-wrap" hidden><textarea class="editor-input" spellcheck="false" wrap="soft" aria-label="文件内容"></textarea></div><div class="markdown-preview" hidden></div></div>
+        <div class="pane-body" role="tabpanel"><div class="empty-pane"><svg class="icon"><use href="#i-file"></use></svg><span>从文件列表打开</span></div><div class="editor-input-wrap" hidden><textarea class="editor-input" spellcheck="false" wrap="soft" aria-label="文件内容"></textarea></div><div class="markdown-preview" hidden></div></div>
         <div class="pane-footer"><span class="pane-state"></span><span class="pane-stats"></span></div>
-      </article>
+      </section>
     </template>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   </body>

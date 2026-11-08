@@ -2,6 +2,7 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const elements = {
   list: $('#file-list'),
   panes: $('#panes'),
+  split: $('#split-toggle'),
   target: $('#assistant-target'),
   prompt: $('#assistant-prompt'),
   suggestion: $('#suggestion'),
@@ -22,17 +23,17 @@ if (fragmentToken) {
 const state = {
   files: [],
   active: 0,
+  split: false,
+  nextTabId: 1,
   suggestion: null,
   panes: [0, 1].map((index) => ({
     index,
-    document: null,
-    content: '',
-    base: '',
-    mode: 'edit',
+    tabs: [],
+    activeTabId: null,
     loading: false,
-    saving: false,
-    error: '',
     element: null,
+    tabNodes: new Map(),
+    renderedTabId: null,
   })),
 };
 
@@ -54,8 +55,12 @@ async function api(url, options = {}) {
   return result;
 }
 
-function dirty(pane) {
-  return Boolean(pane.document && pane.content !== pane.base);
+function activeTab(pane) {
+  return pane.tabs.find((tab) => tab.id === pane.activeTabId) || null;
+}
+
+function dirty(tab) {
+  return Boolean(tab && tab.content !== tab.base);
 }
 
 function paneName(pane) {
@@ -73,7 +78,7 @@ function makeFileItem(file) {
   button.type = 'button';
   button.className = 'file-item';
   button.dataset.type = file.type || 'unsupported';
-  button.classList.toggle('selected', state.panes[state.active].document?.name === file.name);
+  button.classList.toggle('selected', activeTab(state.panes[state.active])?.document.name === file.name);
   const icon = document.createElement('span');
   icon.className = 'file-item-icon';
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -130,77 +135,179 @@ function setSuggestionAvailability() {
   const suggestion = state.suggestion;
   if (!suggestion) return;
   const pane = state.panes[suggestion.paneIndex];
-  elements.description.hidden = state.active === suggestion.paneIndex;
+  const tab = pane.tabs.find((item) => item.id === suggestion.tabId);
+  elements.description.hidden = state.active === suggestion.paneIndex && pane.activeTabId === suggestion.tabId;
   let reason = '';
-  if (!pane.document || pane.document.name !== suggestion.name) reason = '目标文件已关闭，请重新生成建议。';
-  else if (state.active !== suggestion.paneIndex) reason = '请先切回生成建议的编辑区。';
-  else if (pane.content !== suggestion.before) reason = '文件内容已变化，请重新生成建议。';
+  if (!tab) reason = '目标文件已关闭，请重新生成建议。';
+  else if (state.active !== suggestion.paneIndex || pane.activeTabId !== suggestion.tabId) reason = '请先切回生成建议的标签页。';
+  else if (tab.content !== suggestion.before) reason = '文件内容已变化，请重新生成建议。';
   else if (elements.prompt.value.trim() !== suggestion.prompt) reason = '修改请求已变化，请重新生成建议。';
-  else if (!pane.document.editable) reason = '当前文件为只读状态。';
-  else if (pane.loading || pane.saving) reason = '请等待文件操作完成。';
+  else if (!tab.document.editable) reason = '当前文件为只读状态。';
+  else if (tab.saving) reason = '请等待文件保存完成。';
   else if (suggestion.before === suggestion.after) reason = '当前内容无需按此规则修改。';
   elements.apply.disabled = Boolean(reason);
   elements.applyNote.textContent = reason || '应用后不会自动保存。';
 }
 
+function makeTabNode(pane, tab) {
+  const entry = document.createElement('div');
+  entry.className = 'tab-entry';
+  entry.setAttribute('role', 'presentation');
+  const select = document.createElement('button');
+  select.type = 'button';
+  select.className = 'tab-select';
+  select.id = 'tab-' + pane.index + '-' + tab.id;
+  select.setAttribute('role', 'tab');
+  select.setAttribute('aria-controls', 'panel-' + pane.index);
+  const name = document.createElement('span');
+  name.className = 'tab-name';
+  name.textContent = tab.document.name;
+  const marker = document.createElement('span');
+  marker.className = 'tab-dirty';
+  marker.setAttribute('aria-hidden', 'true');
+  select.append(name, marker);
+  select.addEventListener('click', () => selectTab(pane, tab.id));
+  select.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const index = pane.tabs.findIndex((item) => item.id === tab.id);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? pane.tabs.length - 1 :
+      (index + (event.key === 'ArrowRight' ? 1 : -1) + pane.tabs.length) % pane.tabs.length;
+    selectTab(pane, pane.tabs[next].id);
+    pane.tabNodes.get(pane.tabs[next].id).select.focus();
+  });
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'tab-close';
+  close.setAttribute('aria-label', '关闭 ' + tab.document.name);
+  close.title = '关闭 ' + tab.document.name;
+  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  icon.classList.add('icon');
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', '#i-close');
+  icon.append(use);
+  close.append(icon);
+  close.addEventListener('click', () => closeTab(pane, tab.id));
+  entry.append(select, close);
+  return { entry, select, marker, close };
+}
+
+function renderTabs(pane) {
+  const list = $('.tab-list', pane.element);
+  list.setAttribute('aria-label', paneName(pane) + '标签页');
+  for (const [id, node] of pane.tabNodes) {
+    if (!pane.tabs.some((tab) => tab.id === id)) {
+      node.entry.remove();
+      pane.tabNodes.delete(id);
+    }
+  }
+  for (const tab of pane.tabs) {
+    let node = pane.tabNodes.get(tab.id);
+    if (!node) {
+      node = makeTabNode(pane, tab);
+      pane.tabNodes.set(tab.id, node);
+      list.append(node.entry);
+    }
+    const selected = pane.activeTabId === tab.id;
+    node.entry.classList.toggle('selected', selected);
+    node.select.setAttribute('aria-selected', String(selected));
+    node.select.setAttribute('aria-label', tab.document.name + (dirty(tab) ? '，未保存' : ''));
+    node.select.tabIndex = selected ? 0 : -1;
+    node.marker.hidden = !dirty(tab);
+    node.close.disabled = tab.saving;
+  }
+}
+
 function renderPane(pane) {
   const root = pane.element;
-  const doc = pane.document;
-  const isDirty = dirty(pane);
+  const tab = activeTab(pane);
+  const doc = tab?.document;
+  const isDirty = dirty(tab);
+  root.hidden = !state.split && pane.index !== state.active;
   root.classList.toggle('active', pane.index === state.active);
-  root.dataset.type = doc?.type || '';
-  $('.pane-index', root).textContent = paneName(pane);
-  $('.filename', root).textContent = doc?.name || '未打开文件';
+  root.setAttribute('aria-label', paneName(pane));
+  renderTabs(pane);
+  $('.pane-loading', root).hidden = !pane.loading;
+  $('.pane-indicator', root).hidden = !state.split;
+  $('.pane-indicator', root).textContent = '0' + (pane.index + 1);
+  $('.pane-toolbar', root).hidden = !doc;
   $('.file-meta', root).textContent = doc
     ? doc.encoding + ' · ' + (doc.newline === 'none' ? '无换行' : doc.newline === 'mixed' ? '混合换行' : doc.newline)
     : '';
-  $('.dirty-dot', root).hidden = !isDirty;
-  $('.close-pane', root).disabled = !doc || pane.loading || pane.saving;
   const save = $('.save-button', root);
-  save.disabled = !doc || !doc.editable || !isDirty || pane.loading || pane.saving;
-  save.textContent = pane.saving ? '保存中' : '保存';
+  save.disabled = !doc || !doc.editable || !isDirty || tab.saving;
+  save.textContent = tab?.saving ? '保存中' : '保存';
   const editButton = $('.edit-mode', root);
   const previewButton = $('.preview-mode', root);
-  $('.pane-toolbar', root).hidden = !doc || doc.type !== 'markdown';
-  editButton.disabled = !doc;
-  editButton.classList.toggle('selected', pane.mode === 'edit');
-  previewButton.hidden = !doc || doc.type !== 'markdown';
-  previewButton.classList.toggle('selected', pane.mode === 'preview');
+  $('.mode-switch', root).hidden = !doc || doc.type !== 'markdown';
+  editButton.classList.toggle('selected', tab?.mode === 'edit');
+  previewButton.classList.toggle('selected', tab?.mode === 'preview');
   const warning = $('.pane-warning', root);
-  warning.textContent = pane.error || doc?.warning || '';
+  warning.textContent = tab?.error || doc?.warning || '';
   warning.hidden = !warning.textContent;
   $('.empty-pane', root).hidden = Boolean(doc);
-  $('.editor-input-wrap', root).hidden = !doc || pane.mode !== 'edit';
+  $('.editor-input-wrap', root).hidden = !doc || tab.mode !== 'edit';
   const textarea = $('.editor-input', root);
-  textarea.readOnly = !doc?.editable || pane.loading;
+  textarea.readOnly = !doc?.editable;
   textarea.setAttribute('aria-label', (doc?.name || paneName(pane)) + ' 的内容');
-  if (textarea.value !== pane.content) textarea.value = pane.content;
+  if (textarea.value !== (tab?.content || '')) textarea.value = tab?.content || '';
+  if (pane.renderedTabId !== (tab?.id || null)) {
+    textarea.setSelectionRange(tab?.selectionStart || 0, tab?.selectionEnd || 0);
+    textarea.scrollTop = tab?.scrollTop || 0;
+    textarea.scrollLeft = tab?.scrollLeft || 0;
+    pane.renderedTabId = tab?.id || null;
+  }
+  const panel = $('.pane-body', root);
+  if (tab) panel.setAttribute('aria-labelledby', 'tab-' + pane.index + '-' + tab.id);
+  else panel.removeAttribute('aria-labelledby');
   const preview = $('.markdown-preview', root);
-  preview.hidden = !doc || pane.mode !== 'preview';
-  if (!preview.hidden) renderMarkdown(preview, pane.content);
+  preview.hidden = !doc || tab.mode !== 'preview';
+  if (!preview.hidden) renderMarkdown(preview, tab.content);
   const paneState = $('.pane-state', root);
   paneState.classList.toggle('is-dirty', isDirty);
-  paneState.textContent = pane.loading ? '正在打开…' : !doc ? '' : !doc.editable ? '只读' : isDirty ? '● 未保存的更改' : '已保存';
-  $('.pane-stats', root).textContent = doc ? pane.content.length + ' 字符' : '';
+  paneState.textContent = !doc ? '' : !doc.editable ? '只读' : isDirty ? '● 未保存的更改' : '已保存';
+  $('.pane-stats', root).textContent = doc ? tab.content.length + ' 字符' : '';
 }
 
 function renderAll() {
+  elements.panes.classList.toggle('split', state.split);
+  elements.panes.parentElement.classList.toggle('is-split', state.split);
   for (const pane of state.panes) renderPane(pane);
-  const active = state.panes[state.active];
-  elements.target.textContent = active.document ? paneName(active) + ' · ' + active.document.name : '尚未选择文件';
+  const pane = state.panes[state.active];
+  const tab = activeTab(pane);
+  elements.target.textContent = tab ? paneName(pane) + ' · ' + tab.document.name : '尚未选择文件';
+  const hiddenDirty = !state.split && state.panes.some((item) => item.index !== state.active && item.tabs.some(dirty));
+  $('.layout-label', elements.split).textContent = state.split ? '单栏' : '分栏';
+  $('.layout-dirty', elements.split).hidden = !hiddenDirty;
+  elements.split.dataset.active = String(state.split);
+  elements.split.setAttribute('aria-label', (state.split ? '切换到单栏' : '打开分栏') + (hiddenDirty ? '，隐藏的编辑区有未保存的更改' : ''));
+  elements.split.title = hiddenDirty ? '隐藏的编辑区有未保存的更改' : state.split ? '切换到单栏' : '打开分栏';
   renderFiles();
   setSuggestionAvailability();
 }
 
 function makePane(pane) {
   const fragment = $('#pane-template').content.cloneNode(true);
-  pane.element = $('.editor-card', fragment);
+  pane.element = $('.editor-pane', fragment);
+  $('.pane-body', pane.element).id = 'panel-' + pane.index;
   pane.element.addEventListener('pointerdown', () => setActive(pane.index));
   pane.element.addEventListener('focusin', () => setActive(pane.index));
   const textarea = $('.editor-input', pane.element);
+  function rememberPosition() {
+    const tab = activeTab(pane);
+    if (!tab || tab.mode !== 'edit') return;
+    tab.selectionStart = textarea.selectionStart;
+    tab.selectionEnd = textarea.selectionEnd;
+    tab.scrollTop = textarea.scrollTop;
+    tab.scrollLeft = textarea.scrollLeft;
+  }
+  for (const event of ['select', 'keyup', 'click', 'scroll']) textarea.addEventListener(event, rememberPosition);
   textarea.addEventListener('input', () => {
-    pane.content = textarea.value;
-    pane.error = '';
+    const tab = activeTab(pane);
+    if (!tab) return;
+    tab.content = textarea.value;
+    tab.error = '';
+    rememberPosition();
     renderPane(pane);
     setSuggestionAvailability();
   });
@@ -210,40 +317,60 @@ function makePane(pane) {
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
     textarea.setRangeText('  ', start, end, 'end');
-    pane.content = textarea.value;
-    pane.error = '';
+    const tab = activeTab(pane);
+    if (!tab) return;
+    tab.content = textarea.value;
+    tab.error = '';
+    rememberPosition();
     renderPane(pane);
     setSuggestionAvailability();
   });
-  $('.edit-mode', pane.element).addEventListener('click', () => { pane.mode = 'edit'; renderPane(pane); });
-  $('.preview-mode', pane.element).addEventListener('click', () => { pane.mode = 'preview'; renderPane(pane); });
-  $('.save-button', pane.element).addEventListener('click', () => savePane(pane));
-  $('.close-pane', pane.element).addEventListener('click', () => closePane(pane));
+  $('.edit-mode', pane.element).addEventListener('click', () => { const tab = activeTab(pane); if (tab) { tab.mode = 'edit'; renderPane(pane); } });
+  $('.preview-mode', pane.element).addEventListener('click', () => { const tab = activeTab(pane); if (tab) { tab.mode = 'preview'; renderPane(pane); } });
+  $('.save-button', pane.element).addEventListener('click', () => saveTab(pane, activeTab(pane)));
   elements.panes.append(fragment);
 }
 
-function confirmDiscard(pane) {
-  return !dirty(pane) || window.confirm(paneName(pane) + '的「' + pane.document.name + '」有未保存的更改。确定丢弃这些更改吗？');
+function selectTab(pane, id) {
+  if (!pane.tabs.some((tab) => tab.id === id)) return;
+  state.active = pane.index;
+  pane.activeTabId = id;
+  renderAll();
 }
 
-function clearSuggestionForPane(pane) {
-  if (state.suggestion?.paneIndex !== pane.index) return;
-  state.suggestion = null;
-  elements.suggestion.hidden = true;
+function toggleSplit() {
+  if (state.split) {
+    const current = state.panes[state.active];
+    const other = state.panes[1 - state.active];
+    if (!current.tabs.length && other.tabs.length) state.active = other.index;
+    state.split = false;
+  } else {
+    state.split = true;
+    const other = state.panes[1 - state.active];
+    if (!other.tabs.length) state.active = other.index;
+  }
+  renderAll();
 }
 
-async function openFile(pane, name) {
-  if (pane.loading || pane.saving || !confirmDiscard(pane)) return;
+async function openFile(pane, name, { activate = true } = {}) {
+  const existing = pane.tabs.find((tab) => tab.document.name === name);
+  if (existing) return activate ? selectTab(pane, existing.id) : undefined;
+  if (pane.loading) return toast('请等待文件打开。', true);
   pane.loading = true;
   renderAll();
   try {
     const doc = await api('/api/file?name=' + encodeURIComponent(name));
-    clearSuggestionForPane(pane);
-    pane.document = doc;
-    pane.content = doc.content;
-    pane.base = doc.content;
-    pane.mode = 'edit';
-    pane.error = '';
+    const tab = {
+      id: state.nextTabId++,
+      document: doc,
+      content: doc.content,
+      base: doc.content,
+      mode: 'edit',
+      saving: false,
+      error: '',
+    };
+    pane.tabs.push(tab);
+    if (activate || pane.activeTabId === null) pane.activeTabId = tab.id;
   } catch (error) {
     toast(error.message, true);
   } finally {
@@ -252,23 +379,33 @@ async function openFile(pane, name) {
   }
 }
 
-function closePane(pane) {
-  if (pane.loading || pane.saving || !confirmDiscard(pane)) return;
-  clearSuggestionForPane(pane);
-  pane.document = null;
-  pane.content = '';
-  pane.base = '';
-  pane.mode = 'edit';
-  pane.error = '';
+function closeTab(pane, id) {
+  const index = pane.tabs.findIndex((tab) => tab.id === id);
+  if (index < 0) return;
+  const tab = pane.tabs[index];
+  if (tab.saving) return;
+  if (dirty(tab) && !window.confirm(paneName(pane) + '的「' + tab.document.name + '」有未保存的更改。确定丢弃这些更改吗？')) return;
+  if (state.suggestion?.tabId === id) {
+    state.suggestion = null;
+    elements.suggestion.hidden = true;
+  }
+  const wasActive = pane.activeTabId === id;
+  pane.tabs.splice(index, 1);
+  if (wasActive) pane.activeTabId = pane.tabs[Math.min(index, pane.tabs.length - 1)]?.id || null;
   renderAll();
+  if (wasActive) {
+    const next = pane.tabNodes.get(pane.activeTabId);
+    if (next) next.select.focus();
+    else pane.element.focus();
+  }
 }
 
-async function savePane(pane) {
-  if (!pane.document || !dirty(pane) || pane.saving || pane.loading || !pane.document.editable) return;
-  const snapshot = pane.content;
-  const doc = pane.document;
-  pane.saving = true;
-  pane.error = '';
+async function saveTab(pane, tab) {
+  if (!tab || !dirty(tab) || tab.saving || !tab.document.editable) return;
+  const snapshot = tab.content;
+  const doc = tab.document;
+  tab.saving = true;
+  tab.error = '';
   renderAll();
   try {
     const result = await api('/api/file', {
@@ -276,14 +413,14 @@ async function savePane(pane) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: doc.name, revision: doc.revision, content: snapshot }),
     });
-    pane.document.revision = result.revision;
-    pane.base = snapshot;
+    tab.document.revision = result.revision;
+    tab.base = snapshot;
     toast('已保存「' + doc.name + '」。');
   } catch (error) {
-    pane.error = error.message;
+    tab.error = error.message;
     toast(error.message, true);
   } finally {
-    pane.saving = false;
+    tab.saving = false;
     renderAll();
   }
 }
@@ -432,17 +569,18 @@ function renderDiff(before, after) {
 
 function generateSuggestion() {
   const pane = state.panes[state.active];
+  const tab = activeTab(pane);
   const prompt = elements.prompt.value.trim();
-  if (!pane.document) return toast('请先在当前编辑区打开文件。', true);
-  if (!pane.document.editable) return toast('当前文件为只读状态，不能应用修改。', true);
+  if (!tab) return toast('请先在当前编辑区打开文件。', true);
+  if (!tab.document.editable) return toast('当前文件为只读状态，不能应用修改。', true);
   if (!prompt) { elements.prompt.focus(); return toast('请先输入希望如何修改。', true); }
-  if (pane.content.length > 40000 || pane.content.split('\n').length > 400) {
+  if (tab.content.length > 40000 || tab.content.split('\n').length > 400) {
     return toast('模拟建议支持不超过 4 万字符、400 行的文档。', true);
   }
-  const after = simulate(pane.content, prompt, pane.document.type);
-  state.suggestion = { paneIndex: pane.index, name: pane.document.name, before: pane.content, after, prompt };
-  elements.description.textContent = '建议目标：' + paneName(pane) + ' · ' + pane.document.name;
-  renderDiff(pane.content, after);
+  const after = simulate(tab.content, prompt, tab.document.type);
+  state.suggestion = { paneIndex: pane.index, tabId: tab.id, name: tab.document.name, before: tab.content, after, prompt };
+  elements.description.textContent = '建议目标：' + paneName(pane) + ' · ' + tab.document.name;
+  renderDiff(tab.content, after);
   elements.suggestion.hidden = false;
   setSuggestionAvailability();
 }
@@ -451,11 +589,12 @@ function applySuggestion() {
   const suggestion = state.suggestion;
   if (!suggestion || elements.apply.disabled) return;
   const pane = state.panes[suggestion.paneIndex];
-  if (state.active !== suggestion.paneIndex || !pane.document || pane.document.name !== suggestion.name ||
-    pane.content !== suggestion.before || !pane.document.editable) return;
-  pane.content = suggestion.after;
-  pane.mode = 'edit';
-  pane.error = '';
+  const tab = pane.tabs.find((item) => item.id === suggestion.tabId);
+  if (state.active !== suggestion.paneIndex || pane.activeTabId !== suggestion.tabId || !tab ||
+    tab.content !== suggestion.before || !tab.document.editable || tab.saving) return;
+  tab.content = suggestion.after;
+  tab.mode = 'edit';
+  tab.error = '';
   state.suggestion = null;
   elements.suggestion.hidden = true;
   renderAll();
@@ -464,6 +603,7 @@ function applySuggestion() {
 
 for (const pane of state.panes) makePane(pane);
 $('#refresh-files').addEventListener('click', refreshFiles);
+elements.split.addEventListener('click', toggleSplit);
 $('#generate').addEventListener('click', generateSuggestion);
 elements.apply.addEventListener('click', applySuggestion);
 elements.prompt.addEventListener('input', setSuggestionAvailability);
@@ -471,7 +611,7 @@ for (const button of document.querySelectorAll('[data-prompt]')) {
   button.addEventListener('click', () => { elements.prompt.value = button.dataset.prompt; setSuggestionAvailability(); elements.prompt.focus(); });
 }
 window.addEventListener('beforeunload', (event) => {
-  if (state.panes.some(dirty)) {
+  if (state.panes.some((pane) => pane.tabs.some(dirty))) {
     event.preventDefault();
     event.returnValue = '';
   }
@@ -481,7 +621,5 @@ renderAll();
 await refreshFiles();
 const markdown = state.files.find((file) => file.type === 'markdown' && file.accessible);
 const text = state.files.find((file) => file.type === 'text' && file.accessible);
-await Promise.all([
-  markdown ? openFile(state.panes[0], markdown.name) : Promise.resolve(),
-  text ? openFile(state.panes[1], text.name) : Promise.resolve(),
-]);
+if (markdown) await openFile(state.panes[0], markdown.name);
+if (text) await openFile(state.panes[0], text.name, { activate: !markdown });
