@@ -2,6 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { suggest, SuggestionError } from '../public/assistant.js';
 
+test('multiple focused targets modify only their original ranges despite length changes', () => {
+  const content = 'first\n\nkeep\n\nlast\n';
+  const makeFocus = (start, end) => ({ role: 'target', start, end, text: content.slice(start, end), documentSnapshot: content });
+  const focuses = [makeFocus(content.indexOf('last'), content.length), makeFocus(0, 5)];
+  const after = suggest({ content, prompt: 'Add title', type: 'text', focuses, language: 'en' });
+  assert.equal(after, 'Document title\n\nfirst\n\nkeep\n\nDocument title\n\nlast\n');
+  assert.equal(focuses[0].start, content.indexOf('last'));
+  assert.throws(() => suggest({ content, prompt: 'Add title', type: 'text', focuses: [makeFocus(0, 8), makeFocus(3, 10)] }), { code: 'stale_focus' });
+  assert.throws(() => suggest({ content: content + 'changed', prompt: 'Add title', type: 'text', focuses }), { code: 'stale_focus' });
+});
+
 test('a focused target changes only its exact source range', () => {
   const content = '# 第一节\n原文\n\n# 第二节\n保留\n';
   const start = content.indexOf('# 第二节');

@@ -1,12 +1,16 @@
 // Built-in adapters operate on the editor's exact in-memory text. Offsets are
 // JavaScript string offsets and always refer to slices of the supplied text.
 export const plugins = Object.freeze([
-  { id: 'markdown', type: 'markdown', extension: '.md', preview: true, blocks: 'headings', render: renderMarkdown },
-  { id: 'text', type: 'text', extension: '.txt', preview: false, blocks: 'paragraphs' },
+  { id: 'markdown', type: 'markdown', extension: '.md', preview: true, blocks: 'headings', render: renderMarkdown, capabilities: Object.freeze({ reference: true, attention: true, focus: true }) },
+  { id: 'text', type: 'text', extension: '.txt', preview: false, blocks: 'paragraphs', capabilities: Object.freeze({ reference: true, attention: true, focus: true }) },
 ]);
 
 export function pluginFor(type) {
   return plugins.find((plugin) => plugin.type === type) || null;
+}
+
+export function supportsContext(type, capability) {
+  return pluginFor(type)?.capabilities?.[capability] === true;
 }
 
 function* linesOf(text) {

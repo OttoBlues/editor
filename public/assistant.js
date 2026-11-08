@@ -32,18 +32,25 @@ function simulate(content, prompt, type, referenceText, language) {
   return appendText(content, '[' + label + prompt.replace(/\s+/g, ' ').trim() + ']');
 }
 
-export function suggest({ content, prompt, type, focus = null, referenceText = null, language = 'zh-CN' }) {
+export function suggest({ content, prompt, type, focus = null, focuses = focus ? [focus] : [], referenceText = null, language = 'zh-CN' }) {
   if (typeof content !== 'string' || typeof prompt !== 'string') throw new SuggestionError('invalid_input');
   if (content.length > 40000 || content.split('\n').length > 400) throw new SuggestionError('too_large');
   let after;
-  if (focus?.role === 'target') {
-    const { start, end, text, documentSnapshot } = focus;
-    if (documentSnapshot !== content || !Number.isInteger(start) || !Number.isInteger(end) ||
-      start < 0 || end < start || end > content.length || content.slice(start, end) !== text) {
-      throw new SuggestionError('stale_focus');
+  const targets = focuses.filter((item) => item.role === 'target').sort((a, b) => a.start - b.start);
+  if (targets.length) {
+    let previousEnd = -1;
+    for (const { start, end, text, documentSnapshot } of targets) {
+      if (documentSnapshot !== content || !Number.isInteger(start) || !Number.isInteger(end) ||
+        start < 0 || end < start || end > content.length || start < previousEnd || content.slice(start, end) !== text) {
+        throw new SuggestionError('stale_focus');
+      }
+      previousEnd = end;
     }
-    const replacement = simulate(text, prompt, type, referenceText, language);
-    after = content.slice(0, start) + replacement + content.slice(end);
+    after = content;
+    for (const { start, end, text } of targets.reverse()) {
+      const replacement = simulate(text, prompt, type, referenceText, language);
+      after = after.slice(0, start) + replacement + after.slice(end);
+    }
   } else {
     after = simulate(content, prompt, type, referenceText, language);
   }

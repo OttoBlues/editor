@@ -13,6 +13,7 @@ const staticFiles = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/plugins.js', ['plugins.js', 'text/javascript; charset=utf-8']],
+  ['/local-files.js', ['local-files.js', 'text/javascript; charset=utf-8']],
   ['/assistant.js', ['assistant.js', 'text/javascript; charset=utf-8']],
   ['/i18n.js', ['i18n.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],

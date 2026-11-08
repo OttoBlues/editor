@@ -17,6 +17,10 @@
       <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/><circle cx="12" cy="12" r="7"/></symbol>
       <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19 8a7.5 7.5 0 0 0-12.8-2L4 8.2M4 4.5v3.7h3.7M5 16a7.5 7.5 0 0 0 12.8 2l2.2-2.2M20 19.5v-3.7h-3.7"/></symbol>
       <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-reference" viewBox="0 0 24 24"><path d="M9.5 14.5l5-5M8 16l-1 1a3.5 3.5 0 0 1-5-5l4-4a3.5 3.5 0 0 1 5 0M16 8l1-1a3.5 3.5 0 0 1 5 5l-4 4a3.5 3.5 0 0 1-5 0"/></symbol>
+      <symbol id="i-attention" viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"/><circle cx="12" cy="12" r="2.5"/></symbol>
+      <symbol id="i-focus" viewBox="0 0 24 24"><path d="M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5"/><circle cx="12" cy="12" r="3"/></symbol>
       <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7zM19 15l.7 2.3L22 18l-2.3.7L19 21l-.7-2.3L16 18l2.3-.7z"/></symbol>
       <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M14 7l5 5-5 5"/></symbol>
       <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4.5 4.5L19 7"/></symbol>
@@ -44,27 +48,20 @@
 
             <section class="context-section">
               <h3 data-i18n="references">引用</h3>
-              <div class="inline-controls"><select id="reference-select" data-i18n-aria="chooseReference"></select><button id="add-reference" type="button" class="secondary-button" data-i18n="add">添加</button></div>
-              <div id="reference-list" class="reference-list"></div>
+              <div id="reference-list" class="context-list"></div>
             </section>
             <section class="context-section attention-section">
-              <div class="context-heading"><h3 data-i18n="attention">关注</h3><span id="attention-access" class="context-badge" hidden></span></div>
-              <div id="assistant-target" class="target-name">尚未选择文件</div>
+              <h3 data-i18n="attention">关注</h3>
+              <div id="attention-list" class="context-list"></div>
             </section>
             <section class="context-section">
               <h3 data-i18n="focus">聚焦</h3>
-              <div class="focus-controls">
-                <label for="focus-source" data-i18n="focusSource">来源</label><select id="focus-source"></select>
-                <label for="focus-block" data-i18n="focusBlock">区块</label><select id="focus-block"></select>
-                <label for="focus-role" data-i18n="focusRole">用途</label><select id="focus-role"><option value="target" data-i18n="targetRole">修改目标</option><option value="reference" data-i18n="referenceRole">参考片段</option></select>
-              </div>
-              <div id="focus-pages" class="focus-pages" hidden><button id="focus-previous" type="button" class="text-button" data-i18n="previousPage">上一页</button><span id="focus-page"></span><button id="focus-next" type="button" class="text-button" data-i18n="nextPage">下一页</button></div>
-              <button id="set-focus" type="button" class="secondary-button focus-set" data-i18n="setFocus">设置聚焦</button>
-              <div id="focus-detail" class="focus-detail" hidden><div class="context-heading"><span id="focus-info"></span><button id="clear-focus" type="button" class="text-button" data-i18n="clear">清除</button></div><p id="focus-warning" class="context-warning" hidden></p><pre id="focus-text"></pre></div>
+              <div id="focus-list" class="context-list"></div>
             </section>
 
             <section class="context-section">
               <label class="field-label" for="assistant-prompt" data-i18n="request">修改要求</label>
+              <p id="assistant-target" class="target-name"></p>
               <textarea id="assistant-prompt" class="prompt-input" maxlength="240"></textarea>
               <div class="quick-prompts"><button type="button" data-prompt-key="addTitle" data-i18n="addTitle">添加标题</button><button type="button" data-prompt-key="tidySpacing" data-i18n="tidySpacing">整理空行</button><button type="button" data-prompt-key="insertReference" data-i18n="insertReference">插入参考</button></div>
               <button id="generate" class="primary-button" type="button"><svg class="icon"><use href="#i-spark"></use></svg><span data-i18n="generate">生成建议</span><svg class="icon button-arrow"><use href="#i-arrow"></use></svg></button>
@@ -97,18 +94,37 @@
     <template id="pane-template">
       <section class="editor-pane" tabindex="0">
         <div class="tabbar">
-          <div class="file-picker"><button type="button" class="file-menu-toggle" aria-expanded="false" data-i18n-aria="openFile"><svg class="icon"><use href="#i-folder"></use></svg><span data-i18n="files">文件</span></button><div class="file-menu" hidden><div class="file-menu-heading"><span data-i18n="files">文件</span><button class="icon-button refresh-files" type="button" data-i18n-aria="refreshFiles" data-i18n-title="refreshFiles"><svg class="icon"><use href="#i-refresh"></use></svg></button></div><div class="file-list" data-i18n-aria="files"></div></div></div>
-          <div class="tab-list" role="tablist"></div><span class="pane-loading" data-i18n="loading" hidden>正在打开…</span><span class="pane-indicator" aria-hidden="true" hidden></span>
+          <div class="tab-list" role="tablist"><button type="button" class="new-tab icon-button" data-i18n-aria="newTab" data-i18n-title="newTab"><svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg></button></div><span class="pane-loading" data-i18n="loading" hidden>正在打开…</span><span class="pane-indicator" aria-hidden="true" hidden></span>
         </div>
         <div class="pane-toolbar">
           <div class="mode-switch"><button type="button" class="edit-mode" data-i18n="edit">编辑</button><button type="button" class="preview-mode" data-i18n="preview">预览</button></div>
+          <div class="context-actions" role="group" data-i18n-aria="contextActions">
+            <button type="button" class="icon-button context-action" data-context="reference" data-i18n-aria="addReference" data-i18n-title="addReference"><svg class="icon" aria-hidden="true"><use href="#i-reference"></use></svg></button>
+            <button type="button" class="icon-button context-action" data-context="attention" data-i18n-aria="addAttention" data-i18n-title="addAttention"><svg class="icon" aria-hidden="true"><use href="#i-attention"></use></svg></button>
+            <button type="button" class="icon-button context-action" data-context="focus" data-i18n-aria="addFocus" data-i18n-title="addFocus" aria-haspopup="dialog" aria-controls="focus-picker" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-focus"></use></svg></button>
+          </div>
           <span class="file-meta"></span><button type="button" class="save-button" data-i18n="save">保存</button>
         </div>
         <div class="pane-warning" hidden></div>
-        <div class="pane-body" role="tabpanel"><div class="empty-pane"><svg class="icon"><use href="#i-file"></use></svg><span data-i18n="emptyPane">点击“文件”打开</span></div><div class="editor-input-wrap" hidden><textarea class="editor-input" spellcheck="false" wrap="soft"></textarea></div><div class="markdown-preview" hidden></div></div>
+        <div class="pane-body" role="tabpanel">
+          <div class="empty-pane">
+            <button class="drop-open" type="button"><svg class="icon" aria-hidden="true"><use href="#i-file"></use></svg><span data-i18n="emptyPane">将文件拖入此区域进行编辑</span><small data-i18n="chooseLocalFile">或点击选择 .md / .txt 文件</small></button>
+            <input class="local-file-input" type="file" accept=".md,.txt" multiple hidden>
+            <details class="sample-files"><summary data-i18n="sampleFiles">演示目录中的文件</summary><div class="file-menu-heading"><span data-i18n="files">文件</span><button class="icon-button refresh-files" type="button" data-i18n-aria="refreshFiles" data-i18n-title="refreshFiles"><svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg></button></div><div class="file-list" data-i18n-aria="files"></div></details>
+          </div>
+          <div class="editor-input-wrap" hidden><textarea class="editor-input" spellcheck="false" wrap="soft"></textarea></div><div class="markdown-preview" hidden></div>
+        </div>
         <div class="pane-footer"><span class="pane-state"></span><span class="pane-stats"></span></div>
       </section>
     </template>
+    <div id="focus-picker" class="focus-picker" role="dialog" data-i18n-aria="addFocus" hidden>
+      <div class="focus-controls">
+        <label for="focus-source" data-i18n="focusSource">来源</label><select id="focus-source"></select>
+        <label for="focus-block" data-i18n="focusBlock">区块</label><select id="focus-block"></select>
+        <label for="focus-role" data-i18n="focusRole">用途</label><select id="focus-role"><option value="target" data-i18n="targetRole">修改目标</option><option value="reference" data-i18n="referenceRole">参考片段</option></select>
+      </div>
+      <div class="focus-picker-footer"><div id="focus-pages" class="focus-pages" hidden><button id="focus-previous" type="button" class="text-button" data-i18n="previousPage">上一页</button><span id="focus-page"></span><button id="focus-next" type="button" class="text-button" data-i18n="nextPage">下一页</button></div><button id="set-focus" type="button" class="icon-button" data-i18n-aria="addFocus" data-i18n-title="addFocus"><svg class="icon" aria-hidden="true"><use href="#i-check"></use></svg></button></div>
+    </div>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   </body>
 </html>

@@ -1,6 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { blocksFor, blocksPage, pluginFor } from '../public/plugins.js';
+import { blocksFor, blocksPage, pluginFor, supportsContext } from '../public/plugins.js';
+
+test('context actions require an explicit plugin capability', () => {
+  for (const capability of ['reference', 'attention', 'focus']) {
+    assert.equal(supportsContext('markdown', capability), true);
+    assert.equal(supportsContext('text', capability), true);
+    assert.equal(supportsContext('python', capability), false);
+    assert.equal(supportsContext(undefined, capability), false);
+  }
+  assert.equal(supportsContext('markdown', 'unknown'), false);
+});
 
 test('Markdown sections retain exact source ranges and ignore headings inside fences', () => {
   const source = '前言 😀\n\n# 标题\n原文\n\n' + '\x60\x60\x60md\n# 代码内标题\n\x60\x60\x60\n\n## 子标题\n结尾\n';
