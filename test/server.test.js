@@ -43,6 +43,11 @@ test('serves the interface and protects local APIs from unauthorized browser ori
   assert.equal(page.status, 200);
   assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   assert.match(await page.text(), /模拟助手/);
+  for (const module of ['/plugins.js', '/assistant.js', '/i18n.js']) {
+    const response = await fetch(f.origin + module);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /text\/javascript/);
+  }
   assert.equal((await fetch(f.origin + '/api/files')).status, 401);
   assert.equal((await f.request('/api/files', { headers: { Origin: 'https://other.example' } })).status, 403);
   assert.equal((await f.request('/api/files', { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403);

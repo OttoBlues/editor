@@ -4,13 +4,17 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <title>笺 · 本地编辑器演示</title>
+    <title>Editor</title>
     <link rel="stylesheet" href="/styles.css">
     <script src="/app.js" type="module"></script>
   </head>
   <body>
     <svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <symbol id="i-file" viewBox="0 0 24 24"><path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13.5 3.5v4h4M9 12h6M9 15.5h6"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 6.5h6l2 2h9v10h-17z"/></symbol>
+      <symbol id="i-workspace" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M10 4.5v15"/></symbol>
+      <symbol id="i-plugins" viewBox="0 0 24 24"><path d="M8 3.5v4M16 3.5v4M6 7.5h12v3.8a6 6 0 0 1-5 5.9v3.3h-2v-3.3a6 6 0 0 1-5-5.9z"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/><circle cx="12" cy="12" r="7"/></symbol>
       <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19 8a7.5 7.5 0 0 0-12.8-2L4 8.2M4 4.5v3.7h3.7M5 16a7.5 7.5 0 0 0 12.8 2l2.2-2.2M20 19.5v-3.7h-3.7"/></symbol>
       <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
       <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 1.7 5.3L19 10l-5.3 1.7L12 17l-1.7-5.3L5 10l5.3-1.7zM19 15l.7 2.3L22 18l-2.3.7L19 21l-.7-2.3L16 18l2.3-.7z"/></symbol>
@@ -20,61 +24,88 @@
     </svg>
 
     <div class="app-shell">
-      <aside class="sidebar" aria-label="文件导航">
-        <div class="brand">
-          <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
-          <strong>笺</strong>
-          <span class="brand-edition">演示</span>
-        </div>
-        <div class="file-heading"><span>文件</span><button class="icon-button" id="refresh-files" type="button" title="刷新文件列表" aria-label="刷新文件列表"><svg class="icon"><use href="#i-refresh"></use></svg></button></div>
-        <div id="file-list" class="file-list" aria-label="文件列表"></div>
+      <aside class="sidebar" data-i18n-aria="navigation">
+        <div class="brand"><div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></div><strong>Editor</strong></div>
+        <nav class="main-nav" data-i18n-aria="navigation">
+          <button type="button" class="nav-button active" data-view="workspace"><svg class="icon"><use href="#i-workspace"></use></svg><span data-i18n="workspace">工作空间</span></button>
+          <button type="button" class="nav-button" data-view="plugins"><svg class="icon"><use href="#i-plugins"></use></svg><span data-i18n="plugins">插件</span></button>
+          <button type="button" class="nav-button" data-view="settings"><svg class="icon"><use href="#i-settings"></use></svg><span data-i18n="settings">设置</span></button>
+        </nav>
       </aside>
 
       <main class="main-area">
-        <header class="topbar">
-          <h1>工作空间</h1>
-          <div class="topbar-actions">
-            <button id="split-toggle" class="layout-button" type="button" data-active="false" aria-label="打开分栏"><svg class="icon"><use href="#i-split"></use></svg><span class="layout-label">分栏</span><span class="layout-dirty" title="隐藏的编辑区有未保存的更改" hidden></span></button>
-            <span class="connection"><span></span>本地运行</span>
-          </div>
-        </header>
-        <div class="content-area">
-          <div class="workspace-layout">
-            <section class="editors-section" aria-label="编辑工作区">
-              <div id="panes" class="panes"></div>
+        <section id="workspace-view" class="workspace-layout" data-i18n-aria="editor">
+          <section class="editors-section" data-i18n-aria="editor">
+            <div id="panes" class="panes"><div id="pane-divider" class="pane-divider" role="separator" tabindex="0" aria-orientation="vertical" aria-valuemin="20" aria-valuemax="80" aria-valuenow="50" data-i18n-aria="resize" hidden></div></div>
+            <button id="split-toggle" class="layout-button" type="button" data-active="false" data-i18n-aria="openSplit"><svg class="icon"><use href="#i-split"></use></svg><span class="layout-label" data-i18n="split">分栏</span><span class="layout-dirty" hidden></span></button>
+          </section>
+          <aside class="assistant-panel" aria-labelledby="assistant-title">
+            <div class="assistant-heading"><div class="spark-icon"><svg class="icon"><use href="#i-spark"></use></svg></div><div><h2 id="assistant-title" data-i18n="assistant">模拟助手</h2><p data-i18n="assistantInfo">基于规则 · 文件不上传</p></div></div>
+
+            <section class="context-section">
+              <h3 data-i18n="references">引用</h3>
+              <div class="inline-controls"><select id="reference-select" data-i18n-aria="chooseReference"></select><button id="add-reference" type="button" class="secondary-button" data-i18n="add">添加</button></div>
+              <div id="reference-list" class="reference-list"></div>
+            </section>
+            <section class="context-section attention-section">
+              <div class="context-heading"><h3 data-i18n="attention">关注</h3><span id="attention-access" class="context-badge" hidden></span></div>
+              <div id="assistant-target" class="target-name">尚未选择文件</div>
+            </section>
+            <section class="context-section">
+              <h3 data-i18n="focus">聚焦</h3>
+              <div class="focus-controls">
+                <label for="focus-source" data-i18n="focusSource">来源</label><select id="focus-source"></select>
+                <label for="focus-block" data-i18n="focusBlock">区块</label><select id="focus-block"></select>
+                <label for="focus-role" data-i18n="focusRole">用途</label><select id="focus-role"><option value="target" data-i18n="targetRole">修改目标</option><option value="reference" data-i18n="referenceRole">参考片段</option></select>
+              </div>
+              <div id="focus-pages" class="focus-pages" hidden><button id="focus-previous" type="button" class="text-button" data-i18n="previousPage">上一页</button><span id="focus-page"></span><button id="focus-next" type="button" class="text-button" data-i18n="nextPage">下一页</button></div>
+              <button id="set-focus" type="button" class="secondary-button focus-set" data-i18n="setFocus">设置聚焦</button>
+              <div id="focus-detail" class="focus-detail" hidden><div class="context-heading"><span id="focus-info"></span><button id="clear-focus" type="button" class="text-button" data-i18n="clear">清除</button></div><p id="focus-warning" class="context-warning" hidden></p><pre id="focus-text"></pre></div>
             </section>
 
-            <aside class="assistant-panel" aria-labelledby="assistant-title">
-              <div class="assistant-heading"><div class="spark-icon"><svg class="icon"><use href="#i-spark"></use></svg></div><div><h2 id="assistant-title">模拟助手</h2><p>基于规则 · 文件不上传</p></div></div>
-              <div class="assistant-target"><span class="target-label">当前编辑区</span><span id="assistant-target" class="target-name">尚未选择文件</span></div>
-              <label class="field-label" for="assistant-prompt">修改要求</label>
+            <section class="context-section">
+              <label class="field-label" for="assistant-prompt" data-i18n="request">修改要求</label>
               <textarea id="assistant-prompt" class="prompt-input" maxlength="240"></textarea>
-              <div class="quick-prompts"><button type="button" data-prompt="添加标题">添加标题</button><button type="button" data-prompt="整理多余空行">整理空行</button></div>
-              <button id="generate" class="primary-button" type="button"><svg class="icon"><use href="#i-spark"></use></svg><span>生成建议</span><svg class="icon button-arrow"><use href="#i-arrow"></use></svg></button>
+              <div class="quick-prompts"><button type="button" data-prompt-key="addTitle" data-i18n="addTitle">添加标题</button><button type="button" data-prompt-key="tidySpacing" data-i18n="tidySpacing">整理空行</button><button type="button" data-prompt-key="insertReference" data-i18n="insertReference">插入参考</button></div>
+              <button id="generate" class="primary-button" type="button"><svg class="icon"><use href="#i-spark"></use></svg><span data-i18n="generate">生成建议</span><svg class="icon button-arrow"><use href="#i-arrow"></use></svg></button>
               <div id="suggestion" class="suggestion" hidden>
-                <h3 class="suggestion-heading">修改建议</h3>
+                <h3 class="suggestion-heading" data-i18n="suggestion">修改建议</h3>
                 <p id="suggestion-description" class="suggestion-description" hidden></p>
-                <div class="diff-legend"><span><i class="removed-key"></i>删除</span><span><i class="added-key"></i>新增</span></div>
-                <div id="diff" class="diff" aria-label="修改前后差异"></div>
-                <button id="apply-suggestion" class="apply-button" type="button"><svg class="icon"><use href="#i-check"></use></svg>应用到编辑区</button>
-                <p class="apply-note">应用后不会自动保存。</p>
+                <div class="diff-legend"><span><i class="removed-key"></i><span data-i18n="removed">删除</span></span><span><i class="added-key"></i><span data-i18n="added">新增</span></span></div>
+                <div id="diff" class="diff" data-i18n-aria="diff"></div>
+                <button id="apply-suggestion" class="apply-button" type="button"><svg class="icon"><use href="#i-check"></use></svg><span data-i18n="apply">应用到编辑区</span></button>
+                <p class="apply-note"></p>
               </div>
-            </aside>
-          </div>
-        </div>
+            </section>
+          </aside>
+        </section>
+
+        <section id="plugins-view" class="page-view" hidden>
+          <h1 data-i18n="plugins">插件</h1>
+          <h2 class="page-subtitle" data-i18n="installedPlugins">已安装</h2>
+          <div id="plugin-list" class="plugin-list"></div>
+          <p class="page-note" data-i18n="pluginBoundary">演示仅包含内置插件，暂不支持安装外部插件。</p>
+        </section>
+        <section id="settings-view" class="page-view" hidden>
+          <h1 data-i18n="settings">设置</h1>
+          <div class="setting-row"><label for="language-select" data-i18n="language">语言</label><select id="language-select"><option value="zh-CN">简体中文</option><option value="en">English</option></select></div>
+          <fieldset class="setting-row color-setting"><legend data-i18n="themeColor">主题颜色</legend><div class="color-options"><label><input type="radio" name="accent" value="purple"><span class="color-swatch purple"></span><span data-i18n="purple">紫色</span></label><label><input type="radio" name="accent" value="blue"><span class="color-swatch blue"></span><span data-i18n="blue">蓝色</span></label><label><input type="radio" name="accent" value="green"><span class="color-swatch green"></span><span data-i18n="green">绿色</span></label></div></fieldset>
+        </section>
       </main>
     </div>
 
     <template id="pane-template">
       <section class="editor-pane" tabindex="0">
-        <div class="tabbar"><div class="tab-list" role="tablist"></div><span class="pane-loading" hidden>正在打开…</span><span class="pane-indicator" aria-hidden="true" hidden></span></div>
+        <div class="tabbar">
+          <div class="file-picker"><button type="button" class="file-menu-toggle" aria-expanded="false" data-i18n-aria="openFile"><svg class="icon"><use href="#i-folder"></use></svg><span data-i18n="files">文件</span></button><div class="file-menu" hidden><div class="file-menu-heading"><span data-i18n="files">文件</span><button class="icon-button refresh-files" type="button" data-i18n-aria="refreshFiles" data-i18n-title="refreshFiles"><svg class="icon"><use href="#i-refresh"></use></svg></button></div><div class="file-list" data-i18n-aria="files"></div></div></div>
+          <div class="tab-list" role="tablist"></div><span class="pane-loading" data-i18n="loading" hidden>正在打开…</span><span class="pane-indicator" aria-hidden="true" hidden></span>
+        </div>
         <div class="pane-toolbar">
-          <div class="mode-switch"><button type="button" class="edit-mode">编辑</button><button type="button" class="preview-mode">预览</button></div>
-          <span class="file-meta"></span>
-          <button type="button" class="save-button">保存</button>
+          <div class="mode-switch"><button type="button" class="edit-mode" data-i18n="edit">编辑</button><button type="button" class="preview-mode" data-i18n="preview">预览</button></div>
+          <span class="file-meta"></span><button type="button" class="save-button" data-i18n="save">保存</button>
         </div>
         <div class="pane-warning" hidden></div>
-        <div class="pane-body" role="tabpanel"><div class="empty-pane"><svg class="icon"><use href="#i-file"></use></svg><span>从文件列表打开</span></div><div class="editor-input-wrap" hidden><textarea class="editor-input" spellcheck="false" wrap="soft" aria-label="文件内容"></textarea></div><div class="markdown-preview" hidden></div></div>
+        <div class="pane-body" role="tabpanel"><div class="empty-pane"><svg class="icon"><use href="#i-file"></use></svg><span data-i18n="emptyPane">点击“文件”打开</span></div><div class="editor-input-wrap" hidden><textarea class="editor-input" spellcheck="false" wrap="soft"></textarea></div><div class="markdown-preview" hidden></div></div>
         <div class="pane-footer"><span class="pane-state"></span><span class="pane-stats"></span></div>
       </section>
     </template>
