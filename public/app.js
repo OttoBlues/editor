@@ -1,7 +1,7 @@
 import { blocksPage, plugins, pluginFor, supportsContext } from './plugins.js';
 import { readLocalFile, localFileBlob } from './local-files.js';
-import { suggest, SuggestionError } from './assistant.js';
-import { focusRanges, rangesOverlap, validFocus, focusText, focusCanvasBlocks } from './focus.js';
+import { suggestForAttention, SuggestionError } from './assistant.js';
+import { focusRanges, rangesOverlap, validFocus, focusCanvasBlocks } from './focus.js';
 import { translate, serverMessage } from './i18n.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -9,23 +9,13 @@ const elements = {
   panes: $('#panes'),
   split: $('#split-toggle'),
   divider: $('#pane-divider'),
-  target: $('#assistant-target'),
   attentionList: $('#attention-list'),
   referenceList: $('#reference-list'),
   focusList: $('#focus-list'),
   focusPicker: $('#focus-picker'),
-  focusSource: $('#focus-source'),
-  focusMode: $('#focus-mode'),
-  focusRole: $('#focus-role'),
   focusAnnotation: $('#focus-annotation'),
-  focusContinue: $('#focus-continue'),
   setFocus: $('#set-focus'),
   prompt: $('#assistant-prompt'),
-  suggestion: $('#suggestion'),
-  description: $('#suggestion-description'),
-  diff: $('#diff'),
-  apply: $('#apply-suggestion'),
-  applyNote: $('.apply-note'),
   toast: $('#toast'),
 };
 
@@ -59,12 +49,13 @@ const state = {
   focusManualReview: false,
   focusPage: 0,
   focusHasNext: false,
-  focusStep: 1,
-  focusDraft: null,
   focusEditingId: null,
   contextRevision: 0,
+  activity: [],
+  nextActivityId: 1,
+  pluginConfigId: null,
+  pluginSettings: Object.fromEntries(plugins.map(plugin => [plugin.id, { focusMode: preferences.plugins?.[plugin.id]?.focusMode === 'selection' ? 'selection' : 'structure' }])),
   nextTabId: 1,
-  suggestion: null,
   panes: [0, 1].map((index) => ({
     index,
     tabs: [],
@@ -88,7 +79,7 @@ function applyTranslations(root = document) {
 }
 
 function savePreferences() {
-  try { localStorage.setItem('editor-preferences', JSON.stringify({ language: state.language, theme: state.theme })); } catch { /* Settings remain active for this session. */ }
+  try { localStorage.setItem('editor-preferences', JSON.stringify({ language: state.language, theme: state.theme, plugins: state.pluginSettings })); } catch { /* Settings remain active for this session. */ }
 }
 
 class ApiError extends Error {}
@@ -140,15 +131,6 @@ function focusProblem(focus) {
   if (!validFocus(focus, source.content)) return t('focusStale');
   if (focus.role === 'target' && focus.sourceKind !== 'tab') return t('focusWrongTarget');
   return '';
-}
-
-function relevantFocuses(tab) {
-  return state.focuses.filter((focus) => focus.role === 'reference' || focus.sourceId === tab?.id);
-}
-
-function contextProblem(tab) {
-  if (state.focuses.some((focus) => focus.role === 'target') && !state.focuses.some((focus) => focus.role === 'target' && focus.sourceId === tab?.id)) return t('focusWrongTarget');
-  return relevantFocuses(tab).map((focus) => focusProblem(focus)).find(Boolean) || '';
 }
 
 function dirty(tab) {
@@ -231,25 +213,29 @@ async function refreshFiles() {
   }
 }
 
+function activityProblem(record) {
+  if (record.applied) return '';
+  if (record.contextRevision !== state.contextRevision) return t('contextChanged');
+  if (record.prompt !== elements.prompt.value.trim()) return t('requestChanged');
+  const referenceProblem = state.focuses.filter(focus => focus.role === 'reference').map(focusProblem).find(Boolean);
+  if (referenceProblem) return referenceProblem;
+  for (const edit of record.edits) {
+    const tab = findTab(edit.tabId)?.tab;
+    if (!tab?.document) return t('targetClosed');
+    if (!state.attentions.includes(tab.id)) return t('attentionRequired');
+    if (tab.content !== edit.before) return t('contentChanged');
+    if (!tab.document.editable) return t('cannotEdit');
+    if (tab.saving) return t('savingWait');
+  }
+  return record.edits.some(edit => edit.before !== edit.after) ? '' : t('noChangeNeeded');
+}
+
 function setSuggestionAvailability() {
-  const suggestion = state.suggestion;
-  if (!suggestion) return;
-  const pane = state.panes[suggestion.paneIndex];
-  const tab = pane.tabs.find((item) => item.id === suggestion.tabId);
-  elements.description.hidden = state.active === suggestion.paneIndex && pane.activeTabId === suggestion.tabId;
-  elements.description.textContent = t('suggestionTarget', { pane: paneName(pane), name: suggestion.name });
-  let reason = '';
-  if (!tab) reason = t('targetClosed');
-  else if (state.active !== suggestion.paneIndex || pane.activeTabId !== suggestion.tabId) reason = t('switchBack');
-  else if (tab.content !== suggestion.before) reason = t('contentChanged');
-  else if (elements.prompt.value.trim() !== suggestion.prompt) reason = t('requestChanged');
-  else if (suggestion.contextRevision !== state.contextRevision) reason = t('contextChanged');
-  else if (contextProblem(tab)) reason = contextProblem(tab);
-  else if (!tab.document.editable) reason = t('readonly');
-  else if (tab.saving) reason = t('savingWait');
-  else if (suggestion.before === suggestion.after) reason = t('noChangeNeeded');
-  elements.apply.disabled = Boolean(reason);
-  elements.applyNote.textContent = reason || t('notAutosaved');
+  const hasRequest = elements.prompt.value.trim() || state.focuses.some(focus => focus.role === 'target' && focus.sourceKind === 'tab' && state.attentions.includes(focus.sourceId) && focus.annotation?.trim());
+  $('#generate').disabled = !state.attentions.length || !hasRequest;
+  $('#generate').title = t(!state.attentions.length ? 'attentionRequired' : 'sendRequest');
+  elements.prompt.placeholder = t('requestPlaceholder');
+  renderActivity();
 }
 
 function makeTabNode(pane, tab) {
@@ -382,13 +368,16 @@ function renderTabs(pane) {
   }
 }
 
-function renderFocusToggle(button, tab) {
-  const supported = supportsContext(tab?.document?.type, 'focus');
-  const expanded = !elements.focusPicker.hidden && state.focusTabId === tab?.id;
-  button.disabled = !supported;
-  button.setAttribute('aria-label', t(expanded ? 'closeFocus' : 'addFocus'));
-  button.title = t(!supported ? 'contextUnsupported' : expanded ? 'closeFocus' : 'addFocus');
-  button.setAttribute('aria-expanded', String(expanded));
+function renderContextActions() {
+  const tab = activeTab(state.panes[state.active]);
+  for (const button of document.querySelectorAll('.context-add')) {
+    const kind = button.dataset.context;
+    const supported = supportsContext(tab?.document?.type, kind) && (kind !== 'attention' || tab.document.editable);
+    const added = kind === 'reference' ? state.references.some(item => item.sourceTabId === tab?.id) : kind === 'attention' && state.attentions.includes(tab?.id);
+    button.disabled = !supported || added;
+    button.title = t(!supported ? 'contextUnsupported' : added ? 'alreadyAdded' : { reference: 'addReference', attention: 'addAttention', focus: 'addFocus' }[kind]);
+    if (kind === 'focus') button.setAttribute('aria-expanded', String(!elements.focusPicker.hidden));
+  }
 }
 
 function renderPane(pane) {
@@ -410,21 +399,6 @@ function renderPane(pane) {
   const save = $('.save-button', root);
   save.disabled = !doc || !doc.editable || !isDirty || tab.saving;
   save.textContent = t(tab?.saving ? 'saving' : doc?.source === 'local' ? 'saveCopy' : 'save');
-  for (const button of root.querySelectorAll('[data-context]')) {
-    const capability = button.dataset.context;
-    const supported = supportsContext(doc?.type, capability);
-    if (capability === 'focus') {
-      renderFocusToggle(button, tab);
-      continue;
-    }
-    const added = capability === 'reference' ? state.references.some((item) => item.sourceTabId === tab?.id) : state.attentions.includes(tab?.id);
-    button.disabled = !supported;
-    button.classList.toggle('is-added', added);
-    button.setAttribute('aria-pressed', String(added));
-    const label = t(added ? { reference: 'removeReference', attention: 'removeAttention' }[capability] : { reference: 'addReference', attention: 'addAttention' }[capability], { name: doc?.name || '' });
-    button.setAttribute('aria-label', label);
-    button.title = supported ? label : t('contextUnsupported');
-  }
   const editButton = $('.edit-mode', root);
   const previewButton = $('.preview-mode', root);
   $('.mode-switch', root).hidden = !doc || !pluginFor(doc.type)?.preview;
@@ -467,9 +441,6 @@ function renderAll() {
   elements.divider.setAttribute('aria-valuenow', String(Math.round(state.splitRatio * 100)));
   updateDividerOrientation();
   for (const pane of state.panes) renderPane(pane);
-  const pane = state.panes[state.active];
-  const tab = activeTab(pane);
-  elements.target.textContent = tab?.document ? t('editingTarget', { name: paneName(pane) + ' · ' + tabName(tab) }) : t('noFile');
   const hiddenDirty = !state.split && state.panes.some((item) => item.index !== state.active && item.tabs.some(dirty));
   $('.layout-label', elements.split).textContent = t(state.split ? 'single' : 'split');
   $('.layout-dirty', elements.split).hidden = !hiddenDirty;
@@ -509,15 +480,6 @@ function makePane(pane) {
     pane.element.classList.remove('file-drop-target');
     openLocalFiles(pane, [...event.dataTransfer.files]);
   });
-  for (const button of pane.element.querySelectorAll('[data-context]')) {
-    button.addEventListener('click', () => {
-      const tab = activeTab(pane);
-      if (!supportsContext(tab?.document?.type, button.dataset.context)) return;
-      if (button.dataset.context === 'reference') toggleReference(tab, pane);
-      if (button.dataset.context === 'attention') toggleAttention(tab);
-      if (button.dataset.context === 'focus') openFocusPicker(tab, button);
-    });
-  }
   $('.refresh-files', pane.element).addEventListener('click', refreshFiles);
   $('.focus-add-selection', pane.element).addEventListener('click', addFocusSelection);
   $('.focus-review-selection', pane.element).addEventListener('click', () => {
@@ -534,7 +496,7 @@ function makePane(pane) {
     tab.selectionEnd = textarea.selectionEnd;
     tab.scrollTop = textarea.scrollTop;
     tab.scrollLeft = textarea.scrollLeft;
-    if (selectionChanged && state.focusTabId === tab.id && state.focusStep === 1 && elements.focusMode.value === 'selection') renderFocusPicker();
+    if (selectionChanged && state.focusTabId === tab.id && state.focusMode === 'selection') renderFocusPicker();
   }
   for (const event of ['select', 'keyup', 'click', 'scroll']) textarea.addEventListener(event, rememberPosition);
   textarea.addEventListener('input', () => {
@@ -610,7 +572,6 @@ function moveTab(sourceIndex, targetIndex, id, destinationIndex = null) {
   target.tabs.splice(destination, 0, tab);
   target.activeTabId = id;
   state.active = target.index;
-  if (state.suggestion?.tabId === id) state.suggestion.paneIndex = target.index;
   renderAll();
   target.tabNodes.get(id)?.select.focus();
   return true;
@@ -745,10 +706,6 @@ function closeTab(pane, id) {
     state.attentions = state.attentions.filter((tabId) => tabId !== id);
     state.focuses = state.focuses.filter((focus) => focus.sourceKind !== 'tab' || focus.sourceId !== id);
     state.contextRevision += 1;
-  }
-  if (state.suggestion?.tabId === id) {
-    state.suggestion = null;
-    elements.suggestion.hidden = true;
   }
   const wasActive = pane.activeTabId === id;
   pane.tabs.splice(index, 1);
@@ -957,18 +914,10 @@ function toggleAttention(tab) {
   renderAll();
 }
 
-function focusSources() {
+function pickerSource() {
   const tab = findTab(state.focusTabId)?.tab;
-  const sources = tab?.document && supportsContext(tab.document.type, 'focus')
-    ? [{ kind: 'tab', id: tab.id, name: tab.document.name, type: tab.document.type, content: tab.content, editable: tab.document.editable }] : [];
-  for (const reference of state.references) {
-    if (supportsContext(reference.type, 'focus')) sources.push({ kind: 'reference', id: reference.id, name: reference.name, type: reference.type, content: reference.content, editable: false });
-  }
-  return sources;
-}
-
-function sourceValue(source) {
-  return source.kind + ':' + source.id;
+  return tab?.document && supportsContext(tab.document.type, 'focus')
+    ? { kind: 'tab', id: tab.id, name: tab.document.name, type: tab.document.type, content: tab.content, editable: tab.document.editable } : null;
 }
 
 function blockKey(block) {
@@ -1003,8 +952,8 @@ function focusDraftFor(source) {
     sourceKind: source.kind, sourceId: source.id, sourceName: source.name,
     documentSnapshot: source.content,
     ranges: state.focusSelected.map((range) => ({ ...range })).sort((a, b) => a.start - b.start),
-    mode: elements.focusMode.value, page: state.focusPage,
-    role: source.kind === 'tab' && source.editable ? elements.focusRole.value : 'reference',
+    mode: state.focusMode, page: state.focusPage,
+    role: source.editable ? 'target' : 'reference',
   };
 }
 
@@ -1018,21 +967,16 @@ function focusConflict(focus) {
   return '';
 }
 
-function pickerSource() {
-  return focusSources().find((item) => sourceValue(item) === elements.focusSource.value);
-}
-
 function addFocusSelection() {
   const source = pickerSource();
   const block = selectionBlock(source);
-  if (!source || !block || state.focusStep !== 1) return;
+  if (!source || !block) return;
   if (state.focusSelected.some((range) => rangesOverlap(range, block))) return toast(t('focusSelectionOverlap'), true);
   state.focusSelected.push({ ...block, text: source.content.slice(block.start, block.end) });
   renderFocusPicker();
 }
 
 function toggleFocusBlock(block) {
-  if (state.focusStep !== 1) return;
   const source = pickerSource();
   if (!source || source.content !== state.focusPickerSnapshot) return renderFocusPicker();
   const existing = state.focusSelected.find((range) => blockKey(range) === blockKey(block));
@@ -1055,14 +999,11 @@ function renderFocusCanvas(pane) {
   tools.hidden = true;
   root.classList.remove('selecting-text');
   if (!active) return;
-  const secondStep = state.focusStep === 2;
-  const source = secondStep && state.focusDraft ? {
-    kind: state.focusDraft.sourceKind, name: state.focusDraft.sourceName, content: state.focusDraft.documentSnapshot,
-  } : pickerSource();
+  const source = pickerSource();
   if (!source) return;
   $('.empty-pane', root).hidden = true;
-  const manual = !secondStep && elements.focusMode.value === 'selection';
-  const selected = secondStep ? focusRanges(state.focusDraft) : state.focusSelected;
+  const manual = state.focusMode === 'selection';
+  const selected = state.focusSelected;
   const showBlocks = !manual || state.focusManualReview;
   tools.hidden = !manual;
   root.classList.toggle('selecting-text', manual);
@@ -1080,10 +1021,10 @@ function renderFocusCanvas(pane) {
   view.hidden = false;
   // Page only the structural view; manual selection still exposes all text.
   // Selections crossing a page edge stay whole and can be cancelled there.
-  const candidates = manual || secondStep ? [] : state.focusBlocks;
+  const candidates = manual ? [] : state.focusBlocks;
   let start = 0;
   let end = source.content.length;
-  if (!manual && !secondStep && candidates.length) {
+  if (!manual && candidates.length) {
     start = candidates[0].start;
     end = candidates.at(-1).end;
     const visible = selected.filter((range) => rangesOverlap(range, { start, end }));
@@ -1138,11 +1079,10 @@ function renderFocusCanvas(pane) {
   }
   for (const button of view.querySelectorAll('[data-range]')) {
     button.setAttribute('aria-pressed', String(selected.some((range) => blockKey(range) === button.dataset.range)));
-    button.setAttribute('aria-disabled', String(secondStep));
   }
-  const location = state.focusPickerSource + ':' + elements.focusMode.value + ':' + state.focusPage + ':' + state.focusStep;
+  const location = state.focusTabId + ':' + state.focusMode + ':' + state.focusPage;
   if (pane.focusCanvasLocation !== location) {
-    const first = secondStep ? selected[0] : blocks[0];
+    const first = blocks[0];
     const button = first && [...view.querySelectorAll('[data-range]')].find((item) => item.dataset.range === blockKey(first));
     view.scrollTop = button ? Math.max(0, button.offsetTop - 20) : 0;
     pane.focusCanvasLocation = location;
@@ -1155,41 +1095,31 @@ function openFocusPicker(tab, button) {
   if (!elements.focusPicker.hidden && state.focusTabId === tab.id) return closeFocusPicker(true);
   closeFocusPicker();
   state.focusTabId = tab.id;
-  state.focusStep = 1;
   state.focusPage = 0;
+  state.focusMode = state.pluginSettings[pluginFor(tab.document.type).id].focusMode;
+  state.focusPickerSnapshot = tab.content;
   focusAnchor = button;
   elements.focusPicker.hidden = false;
-  elements.focusSource.replaceChildren(new Option(tabName(tab), 'tab:' + tab.id));
-  const selection = selectionBlock({ kind: 'tab', id: tab.id });
-  const mode = selection ? 'selection' : pluginFor(tab.document.type).focusModes[0];
-  elements.focusMode.replaceChildren(new Option('', mode));
   elements.focusAnnotation.value = '';
-  elements.focusRole.value = tab.document.editable ? 'target' : 'reference';
-  button.setAttribute('aria-expanded', 'true');
+  const selection = selectionBlock({ kind: 'tab', id: tab.id });
+  if (selection && state.focusMode === 'selection') state.focusSelected = [{ ...selection, text: tab.content.slice(selection.start, selection.end) }];
   renderFocusPicker();
-  if (selection) { addFocusSelection(); state.focusManualReview = true; renderFocusPicker(); }
-  elements.focusMode.focus({ preventScroll: true });
+  elements.focusAnnotation.focus({ preventScroll: true });
 }
 
 function editFocus(focus, button) {
-  const found = focus.sourceKind === 'tab' ? findTab(focus.sourceId) : findTab(activeTab(state.panes[state.active])?.id);
+  const found = findTab(focus.sourceId);
   if (!found) return toast(t('focusSourceMissing'), true);
   showContextTab(found);
   state.focusTabId = found.tab.id;
-  state.focusStep = 2;
   state.focusEditingId = focus.id;
-  state.focusDraft = { ...focus, ranges: focusRanges(focus).map((range) => ({ ...range })) };
-  state.focusSelected = state.focusDraft.ranges.map((range) => ({ ...range }));
+  state.focusSelected = focusRanges(focus).map(range => ({ ...range }));
   state.focusPage = focus.page || 0;
+  state.focusMode = state.pluginSettings[pluginFor(found.tab.document.type).id].focusMode;
+  state.focusManualReview = state.focusMode === 'selection';
+  state.focusPickerSnapshot = focus.documentSnapshot;
   focusAnchor = button;
   elements.focusPicker.hidden = false;
-  elements.focusSource.replaceChildren(new Option(focus.sourceName, focus.sourceKind + ':' + focus.sourceId));
-  elements.focusMode.replaceChildren(new Option('', focus.mode));
-  state.focusPickerSource = focus.sourceKind + ':' + focus.sourceId;
-  state.focusPickerSnapshot = focus.documentSnapshot;
-  state.focusPickerMode = focus.mode;
-  state.focusBlocks = [...state.focusSelected];
-  elements.focusRole.value = focus.role;
   elements.focusAnnotation.value = focus.annotation || '';
   renderFocusPicker();
   elements.focusAnnotation.focus({ preventScroll: true });
@@ -1200,127 +1130,64 @@ function dockFocusPicker() {
   const pane = findTab(state.focusTabId)?.pane;
   if (!pane) return;
   const content = $('.pane-content', pane.element);
-  if (elements.focusPicker.parentElement !== content) content.prepend(elements.focusPicker);
+  if (elements.focusPicker.parentElement !== content) content.append(elements.focusPicker);
   for (const item of state.panes) {
     item.element.classList.toggle('has-focus', item === pane);
-    // Use the actual pane width: a split editor can be narrow on a wide screen.
     item.element.classList.toggle('focus-compact', item === pane && item.element.clientWidth < 620);
-    renderFocusToggle($('[data-context="focus"]', item.element), activeTab(item));
   }
+  renderContextActions();
 }
 
 function closeFocusPicker(restoreFocus = false) {
   elements.focusPicker.hidden = true;
-  focusAnchor?.setAttribute('aria-expanded', 'false');
-  const returnTarget = focusAnchor?.isConnected ? focusAnchor : state.focusEditingId
-    ? elements.focusList.querySelector('[data-card-id="' + state.focusEditingId + '"] .context-edit') : null;
+  const returnTarget = focusAnchor?.isConnected ? focusAnchor : $('#add-focus');
   focusAnchor = null;
   state.focusTabId = null;
-  state.focusDraft = null;
   state.focusEditingId = null;
-  state.focusStep = 1;
   state.focusSelected = [];
   state.focusBlocks = [];
   state.focusManualReview = false;
-  state.focusPickerSource = '';
   state.focusPickerSnapshot = null;
-  state.focusPickerMode = '';
   for (const pane of state.panes) if (pane.element) {
     pane.focusCanvasLocation = '';
     pane.element.classList.remove('has-focus', 'focus-compact');
     renderPane(pane);
   }
+  renderContextActions();
   if (restoreFocus) returnTarget?.focus({ preventScroll: true });
 }
 
 function renderFocusPicker() {
   if (elements.focusPicker.hidden) return;
-  if (state.focusEditingId && !state.focuses.some((focus) => focus.id === state.focusEditingId)) return closeFocusPicker();
-  const secondStep = state.focusStep === 2;
+  const source = pickerSource();
+  if (!source || (state.focusEditingId && !state.focuses.some(focus => focus.id === state.focusEditingId))) return closeFocusPicker();
+  const sourceChanged = state.focusPickerSnapshot !== source.content;
+  if (sourceChanged) {
+    state.focusSelected = [];
+    state.focusPage = 0;
+    state.focusPickerSnapshot = source.content;
+  }
+  if (state.focusMode === 'selection') findTab(source.id).tab.mode = 'edit';
+  const page = state.focusMode === 'selection' ? { blocks: [], hasNext: false } : blocksPage(source.type, source.content, state.focusPage);
+  state.focusBlocks = page.blocks;
+  state.focusHasNext = page.hasNext;
   $('#focus-title').textContent = t(state.focusEditingId ? 'editFocus' : 'addFocus');
-  $('#focus-range-step').hidden = secondStep;
-  $('#focus-note-step').hidden = !secondStep;
-  $('#focus-back').hidden = !secondStep;
-  elements.focusContinue.hidden = secondStep;
-  elements.setFocus.hidden = !secondStep;
-  elements.setFocus.textContent = t(state.focusEditingId ? 'saveFocus' : 'createFocus');
+  $('#focus-range').textContent = t('focusSelectedCount', { n: state.focusSelected.length });
+  $('#focus-range').title = state.focusSelected.length ? focusRangeLabel(focusDraftFor(source)) : '';
+  $('#focus-pages').hidden = state.focusMode === 'selection' || (state.focusPage === 0 && !page.hasNext);
+  $('#focus-page').textContent = t('pageNumber', { n: state.focusPage + 1 });
+  $('#focus-previous').disabled = state.focusPage === 0;
+  $('#focus-next').disabled = !page.hasNext;
+  const annotation = elements.focusAnnotation.value.trim();
+  const problem = sourceChanged ? t('focusStale') : state.focusSelected.length ? focusConflict(focusDraftFor(source)) : '';
+  $('#focus-error').textContent = problem;
+  $('#focus-error').hidden = !problem;
   elements.focusAnnotation.placeholder = t('focusNotePlaceholder');
-  for (const [id, step] of [['#focus-step-range', 1], ['#focus-step-note', 2]]) {
-    if (state.focusStep === step) $(id).setAttribute('aria-current', 'step');
-    else $(id).removeAttribute('aria-current');
-  }
-  const sources = focusSources();
-  const error = $('#focus-error');
-  error.textContent = '';
-  error.hidden = true;
-  if (secondStep) {
-    const draft = state.focusDraft;
-    const source = sources.find((item) => item.kind === draft.sourceKind && item.id === draft.sourceId);
-    const targetOption = elements.focusRole.querySelector('option[value="target"]');
-    targetOption.disabled = source?.kind !== 'tab' || !source.editable;
-    if (targetOption.disabled) elements.focusRole.value = 'reference';
-    const annotation = elements.focusAnnotation.value.trim();
-    const problem = focusProblem(draft) || focusConflict({ ...draft, role: elements.focusRole.value }) || (annotation.length > 2000 ? t('focusNoteTooLong') : '');
-    error.textContent = problem;
-    error.hidden = !problem;
-    elements.setFocus.disabled = Boolean(problem) || !annotation;
-    $('#focus-range').textContent = t('focusGroupRange', { name: draft.sourceName, n: draft.ranges.length, count: draft.ranges.reduce((sum, range) => sum + range.text.length, 0) });
-    $('#focus-range').title = focusRangeLabel(draft);
-  } else {
-    const previousSource = elements.focusSource.value;
-    const previousMode = elements.focusMode.value;
-    elements.focusSource.replaceChildren(...sources.map((source) => new Option(t(source.kind === 'tab' ? 'currentFile' : 'referenceFile', { name: source.name }), sourceValue(source))));
-    if (sources.some((source) => sourceValue(source) === previousSource)) elements.focusSource.value = previousSource;
-    const source = pickerSource();
-    const modes = (pluginFor(source?.type)?.focusModes || []).filter((mode) => mode !== 'selection' || source.kind === 'tab');
-    const modeKeys = { structure: 'focusModeStructure', selection: 'focusModeSelection' };
-    elements.focusMode.replaceChildren(...modes.map((mode) => new Option(t(modeKeys[mode]), mode)));
-    if (modes.includes(previousMode)) elements.focusMode.value = previousMode;
-    const mode = elements.focusMode.value;
-    const sourceChanged = state.focusPickerSource !== (source ? sourceValue(source) : '') || state.focusPickerSnapshot !== source?.content;
-    if (sourceChanged) { state.focusSelected = []; state.focusManualReview = false; }
-    if (sourceChanged || state.focusPickerMode !== mode) state.focusPage = 0;
-    if (mode === 'selection' && source?.kind === 'tab') findTab(source.id).tab.mode = 'edit';
-    const page = source && mode !== 'selection' ? blocksPage(source.type, source.content, state.focusPage, 200, mode) : { blocks: [], hasNext: false };
-    state.focusBlocks = page.blocks;
-    state.focusHasNext = page.hasNext;
-    state.focusPickerSource = source ? sourceValue(source) : '';
-    state.focusPickerSnapshot = source?.content;
-    state.focusPickerMode = mode;
-    elements.focusSource.disabled = !sources.length;
-    elements.focusMode.disabled = !modes.length;
-    elements.focusContinue.disabled = !source || !state.focusSelected.length;
-    $('#focus-mode-hint').textContent = t(mode === 'selection' ? 'focusSelectionHint' : source?.type === 'text' ? 'focusTextHint' : 'focusStructureHint');
-    $('.focus-legend').hidden = mode === 'selection' && !state.focusManualReview;
-    $('#focus-pages').hidden = mode === 'selection' || (state.focusPage === 0 && !page.hasNext);
-    $('#focus-page').textContent = t('pageNumber', { n: state.focusPage + 1 });
-    $('#focus-previous').disabled = state.focusPage === 0;
-    $('#focus-next').disabled = !page.hasNext;
-    $('#focus-range').textContent = t('focusSelectedCount', { n: state.focusSelected.length });
-    $('#focus-range').title = source && state.focusSelected.length ? focusRangeLabel(focusDraftFor(source)) : '';
-  }
+  elements.setFocus.disabled = !state.focusSelected.length || !annotation || annotation.length > 2000 || Boolean(problem);
+  elements.setFocus.setAttribute('aria-label', t(state.focusEditingId ? 'saveFocus' : 'createFocus'));
+  elements.setFocus.title = t(state.focusEditingId ? 'saveFocus' : 'createFocus');
   dockFocusPicker();
   for (const pane of state.panes) renderFocusCanvas(pane);
-}
-
-function continueFocus() {
-  const source = pickerSource();
-  if (!source || state.focusPickerSource !== sourceValue(source) || state.focusPickerSnapshot !== source.content) {
-    renderFocusPicker();
-    return toast(t('focusStale'), true);
-  }
-  if (!state.focusSelected.length) return toast(t('chooseBlock'), true);
-  state.focusDraft = focusDraftFor(source);
-  state.focusStep = 2;
-  renderFocusPicker();
-  elements.focusAnnotation.focus({ preventScroll: true });
-}
-
-function returnToFocusRange() {
-  state.focusStep = 1;
-  state.focusManualReview = elements.focusMode.value === 'selection';
-  renderFocusPicker();
-  elements.focusMode.focus({ preventScroll: true });
 }
 
 async function openFocusedSource(focus) {
@@ -1348,6 +1215,7 @@ function renderContext() {
   renderAttentionCards();
   renderFocusPicker();
   renderFocusCards();
+  renderContextActions();
 }
 
 let contextTimer;
@@ -1357,17 +1225,13 @@ function scheduleContextRender() {
 }
 
 function setFocus() {
-  if (state.focusStep !== 2 || !state.focusDraft) return;
-  const draft = { ...state.focusDraft, role: elements.focusRole.value, annotation: elements.focusAnnotation.value.trim() };
-  const source = focusSources().find((item) => item.kind === draft.sourceKind && item.id === draft.sourceId);
+  const source = pickerSource();
+  if (!source || !state.focusSelected.length || elements.setFocus.disabled) return;
+  if (state.focusPickerSnapshot !== source.content) { renderFocusPicker(); return; }
+  const draft = { ...focusDraftFor(source), annotation: elements.focusAnnotation.value.trim() };
   const problem = focusProblem(draft) || focusConflict(draft);
   if (problem) { renderFocusPicker(); return toast(problem, true); }
-  if (!source || !supportsContext(source.type, 'focus')) return toast(t('chooseBlock'), true);
-  if (draft.role === 'target' && (source.kind !== 'tab' || !source.editable)) return toast(t('cannotEdit'), true);
-  if (!draft.annotation || draft.annotation.length > 2000) {
-    elements.focusAnnotation.focus();
-    return toast(t(draft.annotation ? 'focusNoteTooLong' : 'focusAnnotationRequired'), true);
-  }
+  if (!draft.annotation || draft.annotation.length > 2000) return;
   const editingId = state.focusEditingId;
   if (editingId) {
     if (!state.focuses.some((focus) => focus.id === editingId)) return closeFocusPicker();
@@ -1383,101 +1247,119 @@ function setFocus() {
   else if (editingId) elements.focusList.querySelector('[data-card-id="' + editingId + '"] .context-edit')?.focus();
 }
 
-function addDiffRow(kind, text) {
+function addDiffRow(container, kind, text) {
   const row = document.createElement('div');
   row.className = 'diff-row ' + kind;
   row.textContent = (kind === 'added' ? '+ ' : kind === 'removed' ? '− ' : '  ') + text;
-  elements.diff.append(row);
+  container.append(row);
 }
 
-function renderDiff(before, after) {
-  elements.diff.replaceChildren();
-  if (before === after) {
-    addDiffRow('context', t('noChanges'));
-    return;
-  }
+function renderDiff(container, before, after) {
+  container.replaceChildren();
+  if (before === after) return addDiffRow(container, 'context', t('noChanges'));
   const oldLines = before.split('\n');
   const newLines = after.split('\n');
   let prefix = 0;
   while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix += 1;
   let suffix = 0;
-  while (suffix < oldLines.length - prefix && suffix < newLines.length - prefix &&
-    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]) suffix += 1;
-  if (prefix > 2) addDiffRow('context', '…');
-  for (const line of oldLines.slice(Math.max(0, prefix - 2), prefix)) addDiffRow('context', line);
-  for (const line of oldLines.slice(prefix, oldLines.length - suffix)) addDiffRow('removed', line);
-  for (const line of newLines.slice(prefix, newLines.length - suffix)) addDiffRow('added', line);
-  for (const line of oldLines.slice(oldLines.length - suffix, oldLines.length - suffix + Math.min(suffix, 2))) addDiffRow('context', line);
-  if (suffix > 2) addDiffRow('context', '…');
+  while (suffix < oldLines.length - prefix && suffix < newLines.length - prefix && oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]) suffix += 1;
+  if (prefix > 2) addDiffRow(container, 'context', '…');
+  for (const line of oldLines.slice(Math.max(0, prefix - 2), prefix)) addDiffRow(container, 'context', line);
+  for (const line of oldLines.slice(prefix, oldLines.length - suffix)) addDiffRow(container, 'removed', line);
+  for (const line of newLines.slice(prefix, newLines.length - suffix)) addDiffRow(container, 'added', line);
+  for (const line of oldLines.slice(oldLines.length - suffix, oldLines.length - suffix + Math.min(suffix, 2))) addDiffRow(container, 'context', line);
+  if (suffix > 2) addDiffRow(container, 'context', '…');
+}
+
+function renderActivity() {
+  const replies = $('#model-replies');
+  const history = $('#change-history');
+  // Preserve expanded diffs while editing the request or updating file state.
+  const expanded = new Set([...history.querySelectorAll('details[open]')].map(item => item.dataset.change));
+  const existing = new Set([...history.querySelectorAll('details')].map(item => item.dataset.change));
+  replies.replaceChildren(); history.replaceChildren();
+  function empty(container, key) { const p = document.createElement('p'); p.className = 'context-empty'; p.textContent = t(key); container.append(p); }
+  if (!state.activity.length) { empty(replies, 'noReplies'); empty(history, 'noTrackedChanges'); return; }
+  for (const record of [...state.activity].reverse()) {
+    const reply = document.createElement('article'); reply.className = 'model-reply';
+    const time = document.createElement('time'); time.dateTime = record.createdAt; time.textContent = new Date(record.createdAt).toLocaleTimeString(state.language, { hour: '2-digit', minute: '2-digit' });
+    const request = document.createElement('p'); request.className = 'reply-request'; request.textContent = record.prompt || t('focusInstructions');
+    const content = document.createElement('p'); content.textContent = record.error ? t(record.error) : t('demoReply', { n: record.edits.filter(edit => edit.before !== edit.after).length });
+    reply.append(time, request, content); replies.append(reply);
+    if (!record.edits?.length) continue;
+    const batch = document.createElement('article'); batch.className = 'change-batch'; batch.dataset.batch = record.id;
+    for (const [index, edit] of record.edits.entries()) {
+      const details = document.createElement('details'); details.className = 'change-entry'; details.dataset.change = record.id + ':' + index;
+      details.open = expanded.has(details.dataset.change) || (!existing.has(details.dataset.change) && record === state.activity.at(-1));
+      const summary = document.createElement('summary');
+      const name = document.createElement('span'); name.textContent = edit.name;
+      const status = document.createElement('span'); status.className = 'change-status';
+      const current = findTab(edit.tabId)?.tab;
+      status.textContent = t(record.applied ? !current ? 'trackedClosed' : current.content !== edit.after ? 'trackedEdited' : current.base === edit.after ? 'trackedSaved' : 'trackedApplied' : edit.before === edit.after ? 'noChanges' : activityProblem(record) ? 'trackedExpired' : 'trackedPending');
+      summary.append(name, status);
+      const diff = document.createElement('div'); diff.className = 'diff'; diff.setAttribute('aria-label', t('diff'));
+      renderDiff(diff, edit.before, edit.after);
+      details.append(summary, diff); batch.append(details);
+    }
+    if (!record.applied && record.edits.some(edit => edit.before !== edit.after)) {
+      const reason = activityProblem(record);
+      const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'apply-button'; apply.textContent = t('applyAttention'); apply.disabled = Boolean(reason); apply.addEventListener('click', () => applySuggestion(record));
+      const note = document.createElement('p'); note.className = 'apply-note'; note.textContent = reason || t('notAutosaved');
+      batch.append(apply, note);
+    }
+    history.append(batch);
+  }
+  if (!history.children.length) empty(history, 'noTrackedChanges');
 }
 
 function generateSuggestion() {
-  const pane = state.panes[state.active];
-  const tab = activeTab(pane);
+  if ($('#generate').disabled) return;
   const prompt = elements.prompt.value.trim();
-  if (!tab?.document) return toast(t('openFirst'), true);
-  if (!tab.document.editable) return toast(t('cannotEdit'), true);
-  const focuses = relevantFocuses(tab);
-  if (!prompt && !focuses.some((focus) => focus.role === 'target' && focus.annotation?.trim())) { elements.prompt.focus(); return toast(t('enterRequest'), true); }
-  const problem = contextProblem(tab);
-  if (problem) return toast(problem, true);
-  const referenceBlocks = focuses.filter((focus) => focus.role === 'reference').map(focusText);
-  const references = referenceBlocks.length ? referenceBlocks : state.references.map((reference) => reference.content);
-  if (!references.length) {
-    for (const id of state.attentions) {
-      const source = findTab(id)?.tab;
-      if (source?.document && source.id !== tab.id) references.push(source.content);
-    }
-  }
-  const referenceText = references.length ? references.join('\n\n') : null;
-  let after;
+  const record = { id: state.nextActivityId++, prompt, createdAt: new Date().toISOString(), contextRevision: state.contextRevision, edits: [], applied: false };
+  const documents = state.panes.flatMap(pane => pane.tabs.filter(tab => tab.document).map(tab => ({ id: tab.id, name: tab.document.name, type: tab.document.type, editable: tab.document.editable, content: tab.content })));
   try {
-    after = suggest({ content: tab.content, prompt, type: tab.document.type, focuses, referenceText, language: state.language });
+    record.edits = suggestForAttention({ documents, attentionIds: state.attentions, focuses: state.focuses, references: state.references.map(reference => reference.content), prompt, language: state.language });
   } catch (error) {
     if (!(error instanceof SuggestionError)) throw error;
-    return toast(t(error.code === 'reference_required' ? 'referenceRequired' : error.code === 'stale_focus' ? 'focusStale' : error.code === 'too_large' ? 'tooLarge' : 'requestFailed'), true);
+    record.error = ({ no_attention: 'attentionRequired', invalid_target: 'cannotEdit', empty_request: 'enterRequest', reference_required: 'referenceRequired', stale_focus: 'focusStale', too_large: 'tooLarge' })[error.code] || 'requestFailed';
   }
-  state.suggestion = { paneIndex: pane.index, tabId: tab.id, name: tab.document.name, before: tab.content, after, prompt, contextRevision: state.contextRevision };
-  elements.description.textContent = t('suggestionTarget', { pane: paneName(pane), name: tab.document.name });
-  renderDiff(tab.content, after);
-  elements.suggestion.hidden = false;
+  state.activity.push(record);
   setSuggestionAvailability();
 }
 
-function applySuggestion() {
-  const suggestion = state.suggestion;
-  if (!suggestion || elements.apply.disabled) return;
-  const pane = state.panes[suggestion.paneIndex];
-  const tab = pane.tabs.find((item) => item.id === suggestion.tabId);
-  if (state.active !== suggestion.paneIndex || pane.activeTabId !== suggestion.tabId || !tab ||
-    tab.content !== suggestion.before || !tab.document.editable || tab.saving ||
-    state.contextRevision !== suggestion.contextRevision || contextProblem(tab)) return;
-  tab.content = suggestion.after;
-  tab.mode = 'edit';
-  tab.error = '';
-  state.suggestion = null;
-  elements.suggestion.hidden = true;
+function applySuggestion(record) {
+  if (record.applied || activityProblem(record)) return setSuggestionAvailability();
+  closeFocusPicker();
+  for (const edit of record.edits) {
+    const tab = findTab(edit.tabId).tab;
+    tab.content = edit.after; tab.mode = 'edit'; tab.error = '';
+  }
+  record.applied = true;
+  state.contextRevision += 1;
   renderAll();
-  toast(t('applied', { pane: paneName(pane) }));
+  toast(t('appliedAttention', { n: record.edits.filter(edit => edit.before !== edit.after).length }));
 }
 
 function renderPlugins() {
   const list = $('#plugin-list');
   list.replaceChildren();
   for (const plugin of plugins) {
-    const row = document.createElement('div');
-    row.className = 'plugin-row';
+    const row = document.createElement('button'); row.type = 'button'; row.className = 'plugin-row'; row.dataset.plugin = plugin.id;
     const info = document.createElement('div');
-    const name = document.createElement('h3');
-    name.textContent = t(plugin.id === 'markdown' ? 'markdownPlugin' : 'textPlugin');
-    const features = document.createElement('p');
-    features.textContent = t(plugin.id === 'markdown' ? 'markdownFeatures' : 'textFeatures');
+    const name = document.createElement('h3'); name.textContent = t(plugin.id === 'markdown' ? 'markdownPlugin' : 'textPlugin');
+    const features = document.createElement('p'); features.textContent = t(plugin.id === 'markdown' ? 'markdownFeatures' : 'textFeatures');
     info.append(name, features);
-    const status = document.createElement('span');
-    status.className = 'plugin-status';
-    status.textContent = t('builtin');
-    row.append(info, status);
+    row.append(makeIcon('plugins'), info, makeIcon('arrow'));
+    row.addEventListener('click', () => { state.pluginConfigId = plugin.id; renderPlugins(); });
     list.append(row);
+  }
+  const plugin = plugins.find(item => item.id === state.pluginConfigId);
+  $('#plugin-overview').hidden = Boolean(plugin);
+  $('#plugin-config').hidden = !plugin;
+  if (plugin) {
+    $('#plugin-config-title').textContent = t(plugin.id === 'markdown' ? 'markdownPlugin' : 'textPlugin');
+    $('#plugin-config-description').textContent = t(plugin.id === 'markdown' ? 'markdownFeatures' : 'textFeatures');
+    $('#plugin-focus-mode').value = state.pluginSettings[plugin.id].focusMode;
   }
 }
 
@@ -1504,7 +1386,7 @@ function updatePreferences() {
   if (theme) theme.checked = true;
   renderPlugins();
   renderAll();
-  if (state.suggestion) renderDiff(state.suggestion.before, state.suggestion.after);
+  renderActivity();
 }
 
 for (const pane of state.panes) makePane(pane);
@@ -1547,22 +1429,34 @@ $('#language-select').addEventListener('change', (event) => { state.language = e
 for (const input of document.querySelectorAll('input[name="theme"]')) {
   input.addEventListener('change', () => { if (input.checked) { state.theme = input.value; updatePreferences(); } });
 }
-elements.focusSource.addEventListener('change', renderFocusPicker);
-elements.focusMode.addEventListener('change', renderFocusPicker);
-elements.focusRole.addEventListener('change', renderFocusPicker);
 elements.focusAnnotation.addEventListener('input', renderFocusPicker);
-elements.focusContinue.addEventListener('click', continueFocus);
-$('#focus-back').addEventListener('click', returnToFocusRange);
-for (const id of ['#focus-close', '#focus-cancel']) $(id).addEventListener('click', () => closeFocusPicker(true));
+$('#focus-close').addEventListener('click', () => closeFocusPicker(true));
 $('#focus-previous').addEventListener('click', () => { if (state.focusPage > 0) { state.focusPage -= 1; renderFocusPicker(); } });
 $('#focus-next').addEventListener('click', () => { if (state.focusHasNext) { state.focusPage += 1; renderFocusPicker(); } });
 elements.setFocus.addEventListener('click', setFocus);
 $('#generate').addEventListener('click', generateSuggestion);
-elements.apply.addEventListener('click', applySuggestion);
 elements.prompt.addEventListener('input', setSuggestionAvailability);
-for (const button of document.querySelectorAll('[data-prompt-key]')) {
-  button.addEventListener('click', () => { elements.prompt.value = t(button.dataset.promptKey); setSuggestionAvailability(); elements.prompt.focus(); });
+function sendOnEnter(event, send) {
+  if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey || event.isComposing || event.keyCode === 229) return;
+  event.preventDefault();
+  send();
 }
+elements.prompt.addEventListener('keydown', event => sendOnEnter(event, generateSuggestion));
+elements.focusAnnotation.addEventListener('keydown', event => sendOnEnter(event, setFocus));
+for (const button of document.querySelectorAll('.context-add')) button.addEventListener('click', () => {
+  const pane = state.panes[state.active];
+  const tab = activeTab(pane);
+  if (!tab?.document || button.disabled) return;
+  if (button.dataset.context === 'reference') toggleReference(tab, pane);
+  if (button.dataset.context === 'attention') toggleAttention(tab);
+  if (button.dataset.context === 'focus') openFocusPicker(tab, button);
+});
+$('#plugin-back').addEventListener('click', () => { state.pluginConfigId = null; renderPlugins(); });
+$('#plugin-focus-mode').addEventListener('change', event => {
+  if (!state.pluginConfigId) return;
+  state.pluginSettings[state.pluginConfigId].focusMode = event.target.value;
+  savePreferences();
+});
 window.addEventListener('beforeunload', (event) => {
   if (state.panes.some((pane) => pane.tabs.some(dirty))) {
     event.preventDefault();

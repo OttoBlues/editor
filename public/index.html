@@ -13,7 +13,7 @@
       <symbol id="i-file" viewBox="0 0 24 24"><path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13.5 3.5v4h4M9 12h6M9 15.5h6"/></symbol>
       <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 6.5h6l2 2h9v10h-17z"/></symbol>
       <symbol id="i-workspace" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M10 4.5v15"/></symbol>
-      <symbol id="i-plugins" viewBox="0 0 24 24"><path d="M8 3.5v4M16 3.5v4M6 7.5h12v3.8a6 6 0 0 1-5 5.9v3.3h-2v-3.3a6 6 0 0 1-5-5.9z"/></symbol>
+      <symbol id="i-plugins" viewBox="0 0 24 24"><path d="M9 4H4v6a3 3 0 1 1 0 6v4h6a3 3 0 1 1 6 0h4v-6a3 3 0 1 0 0-6V4h-5a3 3 0 1 0-6 0Z"/></symbol>
       <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/><circle cx="12" cy="12" r="7"/></symbol>
       <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/></symbol>
       <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 13.2A8.5 8.5 0 0 1 10.8 3.5a8.5 8.5 0 1 0 9.7 9.7z"/></symbol>
@@ -47,44 +47,31 @@
             <button id="split-toggle" class="layout-button" type="button" data-active="false" data-i18n-aria="openSplit"><svg class="icon"><use href="#i-split"></use></svg><span class="layout-label" data-i18n="split">分栏</span><span class="layout-dirty" hidden></span></button>
           </section>
           <aside class="assistant-panel" aria-labelledby="assistant-title">
-            <div class="assistant-heading"><div class="spark-icon"><svg class="icon"><use href="#i-spark"></use></svg></div><div><h2 id="assistant-title" data-i18n="assistant">模拟助手</h2><p data-i18n="assistantInfo">基于规则 · 文件不上传</p></div></div>
-
+            <div class="assistant-heading"><div class="spark-icon"><svg class="icon"><use href="#i-spark"></use></svg></div><h2 id="assistant-title" data-i18n="assistant">智能编辑</h2></div>
             <section class="context-section">
-              <h3 data-i18n="references">引用</h3>
+              <div class="context-heading"><h3><svg class="icon" aria-hidden="true"><use href="#i-reference"></use></svg><span data-i18n="references">引用</span></h3><button id="add-reference" class="icon-button context-add" data-context="reference" type="button" data-i18n-aria="addReference"><svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg></button></div>
               <div id="reference-list" class="context-list"></div>
             </section>
-            <section class="context-section attention-section">
-              <h3 data-i18n="attention">关注</h3>
+            <section class="context-section">
+              <div class="context-heading"><h3><svg class="icon" aria-hidden="true"><use href="#i-attention"></use></svg><span data-i18n="attention">关注</span></h3><button id="add-attention" class="icon-button context-add" data-context="attention" type="button" data-i18n-aria="addAttention"><svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg></button></div>
               <div id="attention-list" class="context-list"></div>
             </section>
             <section class="context-section">
-              <h3 data-i18n="focus">聚焦</h3>
+              <div class="context-heading"><h3><svg class="icon" aria-hidden="true"><use href="#i-focus"></use></svg><span data-i18n="focus">聚焦</span></h3><button id="add-focus" class="icon-button context-add" data-context="focus" type="button" data-i18n-aria="addFocus" aria-controls="focus-picker" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg></button></div>
               <div id="focus-list" class="context-list"></div>
             </section>
-
             <section class="context-section">
-              <label class="field-label" for="assistant-prompt" data-i18n="request">修改要求</label>
-              <p id="assistant-target" class="target-name"></p>
-              <textarea id="assistant-prompt" class="prompt-input" maxlength="240"></textarea>
-              <div class="quick-prompts"><button type="button" data-prompt-key="addTitle" data-i18n="addTitle">添加标题</button><button type="button" data-prompt-key="tidySpacing" data-i18n="tidySpacing">整理空行</button><button type="button" data-prompt-key="insertReference" data-i18n="insertReference">插入参考</button></div>
-              <button id="generate" class="primary-button" type="button"><svg class="icon"><use href="#i-spark"></use></svg><span data-i18n="generate">生成建议</span><svg class="icon button-arrow"><use href="#i-arrow"></use></svg></button>
-              <div id="suggestion" class="suggestion" hidden>
-                <h3 class="suggestion-heading" data-i18n="suggestion">修改建议</h3>
-                <p id="suggestion-description" class="suggestion-description" hidden></p>
-                <div class="diff-legend"><span><i class="removed-key"></i><span data-i18n="removed">删除</span></span><span><i class="added-key"></i><span data-i18n="added">新增</span></span></div>
-                <div id="diff" class="diff" data-i18n-aria="diff"></div>
-                <button id="apply-suggestion" class="apply-button" type="button"><svg class="icon"><use href="#i-check"></use></svg><span data-i18n="apply">应用到编辑区</span></button>
-                <p class="apply-note"></p>
-              </div>
+              <label class="field-label" for="assistant-prompt" data-i18n="request">编辑要求</label>
+              <div class="composer"><textarea id="assistant-prompt" class="prompt-input" maxlength="2000"></textarea><button id="generate" class="composer-send icon-button" type="button" data-i18n-aria="sendRequest" data-i18n-title="sendRequest"><svg class="icon" aria-hidden="true"><use href="#i-arrow"></use></svg></button></div>
             </section>
+            <section class="context-section" aria-labelledby="reply-heading"><h3 id="reply-heading" data-i18n="modelReply">模型回复</h3><div id="model-replies" class="activity-list" aria-live="polite"></div></section>
+            <section class="context-section" aria-labelledby="tracking-heading"><h3 id="tracking-heading" data-i18n="changeTracking">修改内容追踪</h3><div id="change-history" class="activity-list"></div></section>
           </aside>
         </section>
 
         <section id="plugins-view" class="page-view" hidden>
-          <h1 data-i18n="plugins">插件</h1>
-          <h2 class="page-subtitle" data-i18n="installedPlugins">已安装</h2>
-          <div id="plugin-list" class="plugin-list"></div>
-          <p class="page-note" data-i18n="pluginBoundary">演示仅包含内置插件，暂不支持安装外部插件。</p>
+          <div id="plugin-overview"><h1 data-i18n="plugins">插件</h1><h2 class="page-subtitle" data-i18n="installedPlugins">已安装</h2><div id="plugin-list" class="plugin-list"></div><p class="page-note" data-i18n="pluginBoundary">演示仅包含内置插件，暂不支持安装外部插件。</p></div>
+          <div id="plugin-config" hidden><button id="plugin-back" type="button" class="text-button" data-i18n="backToPlugins">返回插件</button><h1 id="plugin-config-title"></h1><p id="plugin-config-description" class="page-note"></p><div class="setting-row"><label for="plugin-focus-mode" data-i18n="pluginFocusMode">聚焦选取方式</label><select id="plugin-focus-mode"><option value="structure" data-i18n="focusModeStructure">按文档结构</option><option value="selection" data-i18n="focusModeSelection">当前选取</option></select></div><p class="page-note" data-i18n="pluginConfigHelp">设置自动保存，仅用于此插件打开的文件。</p></div>
         </section>
         <section id="settings-view" class="page-view" hidden>
           <h1 data-i18n="settings">设置</h1>
@@ -107,11 +94,6 @@
         </div>
         <div class="pane-toolbar">
           <div class="mode-switch"><button type="button" class="edit-mode" data-i18n="edit">编辑</button><button type="button" class="preview-mode" data-i18n="preview">预览</button></div>
-          <div class="context-actions" role="group" data-i18n-aria="contextActions">
-            <button type="button" class="icon-button context-action" data-context="reference" data-i18n-aria="addReference" data-i18n-title="addReference"><svg class="icon" aria-hidden="true"><use href="#i-reference"></use></svg></button>
-            <button type="button" class="icon-button context-action" data-context="attention" data-i18n-aria="addAttention" data-i18n-title="addAttention"><svg class="icon" aria-hidden="true"><use href="#i-attention"></use></svg></button>
-            <button type="button" class="icon-button context-action" data-context="focus" data-i18n-aria="addFocus" data-i18n-title="addFocus" aria-controls="focus-picker" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-focus"></use></svg></button>
-          </div>
           <span class="file-meta"></span><button type="button" class="save-button" data-i18n="save">保存</button>
         </div>
         <div class="pane-warning" hidden></div>
@@ -133,26 +115,12 @@
     <aside id="focus-picker" class="focus-picker" aria-labelledby="focus-title" hidden>
       <div class="focus-picker-heading"><svg class="icon" aria-hidden="true"><use href="#i-focus"></use></svg><strong id="focus-title" data-i18n="addFocus">添加聚焦</strong><button id="focus-close" type="button" class="icon-button" data-i18n-aria="closeFocus"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button></div>
       <div class="focus-picker-body">
-        <ol class="focus-steps"><li id="focus-step-range"><span>1</span><span data-i18n="focusSelectRange">选择区块</span></li><li id="focus-step-note"><span>2</span><span data-i18n="focusWriteNote">填写说明</span></li></ol>
-        <div id="focus-range-step">
-          <div class="focus-controls">
-            <label for="focus-source" data-i18n="focusSource">来源</label><select id="focus-source"></select>
-            <label for="focus-mode" data-i18n="focusMode">划分方式</label><select id="focus-mode"></select>
-          </div>
-          <p id="focus-mode-hint" class="focus-hint"></p>
-          <div class="focus-legend"><span><i aria-hidden="true"></i><span data-i18n="focusUnselected">未选择</span></span><span><i class="selected" aria-hidden="true"><svg class="icon"><use href="#i-check"></use></svg></i><span data-i18n="focusSelected">已选择</span></span></div>
-          <div id="focus-pages" class="focus-pages" hidden><button id="focus-previous" type="button" class="text-button" data-i18n="previousPage">上一页</button><span id="focus-page"></span><button id="focus-next" type="button" class="text-button" data-i18n="nextPage">下一页</button></div>
-        </div>
         <p id="focus-range" class="focus-range" role="status"></p>
-        <div id="focus-note-step" hidden>
-          <label for="focus-annotation" class="field-label" data-i18n="focusAnnotation">聚焦／改动说明</label>
-          <textarea id="focus-annotation" class="prompt-input focus-annotation" maxlength="2000" required aria-describedby="focus-note-help"></textarea>
-          <p id="focus-note-help" class="focus-hint" data-i18n="focusNoteHelp">为这组区块填写共同的修改目标、限制或需保留的内容（最多 2000 字符）。</p>
-          <div class="focus-controls"><label for="focus-role" data-i18n="focusRole">用途</label><select id="focus-role"><option value="target" data-i18n="targetRole">修改目标</option><option value="reference" data-i18n="referenceRole">参考片段</option></select></div>
-        </div>
+        <div id="focus-pages" class="focus-pages" hidden><button id="focus-previous" type="button" class="text-button" data-i18n="previousPage">上一页</button><span id="focus-page"></span><button id="focus-next" type="button" class="text-button" data-i18n="nextPage">下一页</button></div>
+        <label for="focus-annotation" class="field-label" data-i18n="focusAnnotation">说明</label>
+        <div class="composer"><textarea id="focus-annotation" class="prompt-input focus-annotation" maxlength="2000" required></textarea><button id="set-focus" type="button" class="composer-send icon-button" data-i18n-aria="createFocus" data-i18n-title="createFocus"><svg class="icon" aria-hidden="true"><use href="#i-arrow"></use></svg></button></div>
         <p id="focus-error" class="context-warning" role="status" hidden></p>
       </div>
-      <div class="focus-picker-footer"><button id="focus-cancel" type="button" class="text-button" data-i18n="cancel">取消</button><button id="focus-back" type="button" class="secondary-button" data-i18n="previousStep" hidden>上一步</button><button id="focus-continue" type="button" class="primary-button" data-i18n="nextStep">下一步</button><button id="set-focus" type="button" class="primary-button" data-i18n="createFocus" hidden>创建聚焦</button></div>
     </aside>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   </body>

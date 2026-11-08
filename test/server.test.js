@@ -42,7 +42,7 @@ test('serves the interface and protects local APIs from unauthorized browser ori
   const page = await fetch(f.origin + '/');
   assert.equal(page.status, 200);
   assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/);
-  assert.match(await page.text(), /模拟助手/);
+  assert.match(await page.text(), /智能编辑/);
   for (const module of ['/plugins.js', '/assistant.js', '/i18n.js']) {
     const response = await fetch(f.origin + module);
     assert.equal(response.status, 200);

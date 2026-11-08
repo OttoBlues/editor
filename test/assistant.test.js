@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { suggest, SuggestionError } from '../public/assistant.js';
+import { suggest, suggestForAttention, SuggestionError } from '../public/assistant.js';
 import { focusText, validFocus } from '../public/focus.js';
 import { blocksFor } from '../public/plugins.js';
 
@@ -126,4 +126,55 @@ test('reference focus annotations never become modification targets or replace s
   const focuses = [{ role: 'reference', text: 'source', annotation: 'Add title', start: 0, end: 6, documentSnapshot: 'source' }];
   assert.equal(suggest({ content, type: 'text', prompt: 'Insert reference', focuses, referenceText: 'source', language: 'en' }), 'target\n\nsource');
   assert.equal(focuses[0].annotation, 'Add title');
+});
+
+const watchedDocuments = [
+  { id: 1, name: 'first.md', type: 'markdown', editable: true, content: '# A\nFirst body\n\nKeep this.' },
+  { id: 2, name: 'second.txt', type: 'text', editable: true, content: 'Second body' },
+  { id: 3, name: 'untouched.txt', type: 'text', editable: true, content: 'Untouched' },
+];
+
+test('intelligent editing targets all and only attention files without mutating input', () => {
+  const saved = structuredClone(watchedDocuments);
+  const edits = suggestForAttention({ documents: watchedDocuments, attentionIds: [2, 1, 2], prompt: 'Add title', language: 'en' });
+  assert.deepEqual(edits.map(edit => edit.tabId), [2, 1]);
+  assert.equal(edits[0].after, 'Document title\n\nSecond body');
+  assert.equal(edits[1].after, '# Document title\n\n' + watchedDocuments[0].content);
+  assert.deepEqual(watchedDocuments, saved);
+  assert.throws(() => suggestForAttention({ documents: watchedDocuments, attentionIds: [], prompt: 'Add title' }), { code: 'no_attention' });
+});
+
+test('focused instructions restrict watched files and never authorize edits to unwatched files', () => {
+  const makeFocus = (document, piece) => ({ ...group(document.content, [piece], 'Add title'), sourceKind: 'tab', sourceId: document.id });
+  const firstFocus = makeFocus(watchedDocuments[0], 'First body');
+  const unwatchedFocus = makeFocus(watchedDocuments[2], 'Untouched');
+  const edits = suggestForAttention({ documents: watchedDocuments, attentionIds: [1, 2], focuses: [firstFocus, unwatchedFocus], prompt: '', language: 'en' });
+  assert.equal(edits.length, 1);
+  assert.equal(edits[0].after, '# A\n# Document title\n\nFirst body\n\nKeep this.');
+  assert.throws(() => suggestForAttention({ documents: watchedDocuments, attentionIds: [2], focuses: [unwatchedFocus], prompt: '' }), { code: 'empty_request' });
+});
+
+test('attention plans reject missing, readonly and stale targets before exposing edits', () => {
+  assert.throws(() => suggestForAttention({ documents: watchedDocuments, attentionIds: [1, 99], prompt: 'Title' }), { code: 'invalid_target' });
+  assert.throws(() => suggestForAttention({ documents: watchedDocuments.map(document => ({ ...document, editable: false })), attentionIds: [1], prompt: 'Title' }), { code: 'invalid_target' });
+  const stale = { ...group('Old content', ['Old']), sourceKind: 'tab', sourceId: 1 };
+  assert.throws(() => suggestForAttention({ documents: watchedDocuments, attentionIds: [2, 1], focuses: [stale], prompt: 'Title' }), { code: 'stale_focus' });
+});
+
+test('references feed watched edits without turning other attention files into references', () => {
+  assert.throws(() => suggestForAttention({ documents: watchedDocuments, attentionIds: [1, 2], prompt: 'Insert reference' }), { code: 'reference_required' });
+  const edits = suggestForAttention({ documents: watchedDocuments, attentionIds: [2], references: ['Reference text'], prompt: 'Insert reference' });
+  assert.equal(edits[0].after, 'Second body\n\nReference text');
+});
+
+test('readonly focus supplies exact reference ranges without becoming an edit target', () => {
+  const source = { id: 4, name: 'readonly.md', type: 'markdown', editable: false, content: 'First excerpt\nDo not insert this gap\nLast excerpt' };
+  const documents = [...watchedDocuments, source];
+  const focus = { ...group(source.content, ['Last excerpt', 'First excerpt'], 'Preserve exact wording'), sourceKind: 'tab', sourceId: source.id, role: 'reference' };
+  const edits = suggestForAttention({ documents, attentionIds: [2], focuses: [focus], references: ['Full snapshot'], prompt: 'Insert reference' });
+  assert.deepEqual(edits.map(edit => edit.tabId), [2]);
+  assert.equal(edits[0].after, 'Second body\n\nFirst excerpt\n\nLast excerpt');
+  assert.equal(source.content, 'First excerpt\nDo not insert this gap\nLast excerpt');
+  assert.throws(() => suggestForAttention({ documents: watchedDocuments, attentionIds: [2], focuses: [focus], prompt: 'Insert reference' }), { code: 'stale_focus' });
+  assert.throws(() => suggestForAttention({ documents, attentionIds: [2], focuses: [{ ...focus, documentSnapshot: 'Old' }], prompt: 'Insert reference' }), { code: 'stale_focus' });
 });

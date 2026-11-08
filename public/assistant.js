@@ -1,4 +1,4 @@
-import { focusRanges, validFocus } from './focus.js';
+import { focusRanges, focusText, validFocus } from './focus.js';
 
 export class SuggestionError extends Error {
   constructor(code) {
@@ -93,4 +93,23 @@ export function suggest({ content, prompt, type, focus = null, focuses = focus ?
   }
   if (after.length > 40000 || after.split('\n').length > 400) throw new SuggestionError('too_large');
   return after;
+}
+
+// The UI may navigate freely; only explicitly watched files are edit targets.
+export function suggestForAttention({ documents, attentionIds, focuses = [], references = [], prompt, language = 'zh-CN' }) {
+  if (!attentionIds.length) throw new SuggestionError('no_attention');
+  const targets = [...new Set(attentionIds)].map(id => documents.find(document => document.id === id));
+  if (targets.some(document => !document || !document.editable)) throw new SuggestionError('invalid_target');
+  const targetFocuses = focuses.filter(focus => focus.role === 'target' && focus.sourceKind === 'tab' && attentionIds.includes(focus.sourceId));
+  if (!prompt && !targetFocuses.some(focus => focus.annotation?.trim())) throw new SuggestionError('empty_request');
+  const referenceFocuses = focuses.filter(focus => focus.role === 'reference' && focus.sourceKind === 'tab');
+  if (referenceFocuses.some(focus => !validFocus(focus, documents.find(document => document.id === focus.sourceId)?.content))) throw new SuggestionError('stale_focus');
+  const referenceTexts = referenceFocuses.length ? referenceFocuses.map(focusText) : references;
+  const referenceText = referenceTexts.length ? referenceTexts.join('\n\n') : null;
+  return targets.flatMap(document => {
+    const ranges = targetFocuses.filter(focus => focus.sourceId === document.id);
+    if (!prompt && !ranges.length) return [];
+    return [{ tabId: document.id, name: document.name, before: document.content,
+      after: suggest({ content: document.content, type: document.type, prompt, focuses: ranges, referenceText, language }) }];
+  });
 }
