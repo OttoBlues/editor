@@ -397,10 +397,13 @@ function renderPane(pane) {
   for (const button of root.querySelectorAll('[data-context]')) {
     const capability = button.dataset.context;
     const supported = supportsContext(doc?.type, capability);
-    const added = capability === 'reference' ? state.references.some((item) => item.key === 'tab:' + tab?.id) : capability === 'attention' ? state.attentions.includes(tab?.id) : false;
-    button.disabled = !supported || added;
+    const added = capability === 'reference' ? state.references.some((item) => item.sourceTabId === tab?.id) : state.attentions.includes(tab?.id);
+    button.disabled = !supported;
     button.classList.toggle('is-added', added);
-    button.title = t(!supported ? 'contextUnsupported' : added ? 'contextAdded' : { reference: 'addReference', attention: 'addAttention', focus: 'addFocus' }[capability]);
+    button.setAttribute('aria-pressed', String(added));
+    const label = t(added ? { reference: 'removeReference', attention: 'removeAttention' }[capability] : { reference: 'addReference', attention: 'addAttention' }[capability], { name: doc?.name || '' });
+    button.setAttribute('aria-label', label);
+    button.title = supported ? label : t('contextUnsupported');
   }
   const editButton = $('.edit-mode', root);
   const previewButton = $('.preview-mode', root);
@@ -489,9 +492,8 @@ function makePane(pane) {
     button.addEventListener('click', () => {
       const tab = activeTab(pane);
       if (!supportsContext(tab?.document?.type, button.dataset.context)) return;
-      if (button.dataset.context === 'reference') addReference(tab, pane);
-      if (button.dataset.context === 'attention') addAttention(tab);
-      if (button.dataset.context === 'focus') openFocusPicker(tab, button);
+      if (button.dataset.context === 'reference') toggleReference(tab, pane);
+      if (button.dataset.context === 'attention') toggleAttention(tab);
     });
   }
   $('.refresh-files', pane.element).addEventListener('click', refreshFiles);
@@ -631,14 +633,17 @@ function toggleSplit() {
 
 async function openFile(pane, name, { activate = true } = {}) {
   const existing = pane.tabs.find((tab) => tab.document?.source !== 'local' && tab.document?.name === name);
-  if (existing) return activate ? selectTab(pane, existing.id) : undefined;
+  if (existing) {
+    if (activate) selectTab(pane, existing.id);
+    return existing;
+  }
   if (pane.loading) return toast(t('waitOpen'), true);
   const blankId = !activeTab(pane)?.document ? pane.activeTabId : null;
   pane.loading = true;
   renderAll();
   try {
     const doc = await api('/api/file?name=' + encodeURIComponent(name));
-    installDocument(pane, doc, blankId, activate);
+    return installDocument(pane, doc, blankId, activate);
   } catch (error) {
     toast(errorText(error), true);
   } finally {
@@ -702,6 +707,9 @@ function closeTab(pane, id) {
   const tab = pane.tabs[index];
   if (tab.saving) return;
   if (dirty(tab) && !window.confirm(t('discard', { pane: paneName(pane), name: tab.document.name }))) return;
+  for (const reference of state.references) {
+    if (reference.sourceTabId === id) reference.sourcePane = pane.index;
+  }
   if (state.focusTabId === id) closeFocusPicker();
   if (state.attentions.includes(id) || state.focuses.some((focus) => focus.sourceKind === 'tab' && focus.sourceId === id)) {
     state.attentions = state.attentions.filter((tabId) => tabId !== id);
@@ -772,7 +780,6 @@ function makeIcon(name) {
 }
 
 function renderCards(list, items, emptyKey, kind) {
-  const expanded = new Set([...list.querySelectorAll('details[open]')].map((item) => item.dataset.cardId));
   list.replaceChildren();
   if (!items.length) {
     const empty = document.createElement('p');
@@ -784,31 +791,18 @@ function renderCards(list, items, emptyKey, kind) {
     const card = document.createElement('div');
     card.className = 'context-card';
     card.dataset.kind = kind;
-    const details = document.createElement('details');
-    details.dataset.cardId = String(item.id);
-    details.open = expanded.has(String(item.id));
-    const summary = document.createElement('summary');
+    card.dataset.cardId = String(item.id);
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'context-open';
+    open.setAttribute('aria-label', t('openContextFile', { name: item.name }));
+    open.title = item.warning || item.name;
     const label = document.createElement('span');
     label.className = 'context-card-label';
-    const name = document.createElement('strong');
-    name.textContent = item.name;
-    name.title = item.name;
-    const meta = document.createElement('span');
-    meta.className = 'context-card-meta';
-    meta.textContent = item.meta;
-    label.append(name, meta);
-    summary.append(makeIcon(kind), label);
-    const preview = document.createElement('pre');
-    preview.textContent = item.content;
-    details.append(summary);
-    if (item.warning) {
-      const warning = document.createElement('p');
-      warning.className = 'context-warning';
-      warning.textContent = item.warning;
-      details.append(warning);
-      card.classList.add('has-warning');
-    }
-    details.append(preview);
+    label.textContent = item.name;
+    open.append(makeIcon(kind), label);
+    open.addEventListener('click', item.open);
+    card.classList.toggle('has-warning', Boolean(item.warning));
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'context-remove icon-button';
@@ -820,7 +814,7 @@ function renderCards(list, items, emptyKey, kind) {
       state.contextRevision += 1;
       renderAll();
     });
-    card.append(details, remove);
+    card.append(open, remove);
     list.append(card);
   }
 }
@@ -828,12 +822,8 @@ function renderCards(list, items, emptyKey, kind) {
 function renderReferenceCards() {
   renderCards(elements.referenceList, state.references.map((reference) => ({
     id: reference.id, name: reference.name,
-    meta: paneName(state.panes[reference.sourcePane]) + ' · ' + t('editorSnapshot'),
-    content: reference.content,
-    remove() {
-      state.references = state.references.filter((item) => item.id !== reference.id);
-      state.focuses = state.focuses.filter((focus) => focus.sourceKind !== 'reference' || focus.sourceId !== reference.id);
-    },
+    open() { return openReference(reference); },
+    remove() { removeReference(reference.id); },
   })), 'noReferences', 'reference');
 }
 
@@ -841,8 +831,8 @@ function renderAttentionCards() {
   renderCards(elements.attentionList, state.attentions.flatMap((id) => {
     const found = findTab(id);
     if (!found?.tab.document) return [];
-    const { tab, pane } = found;
-    return [{ id, name: tabName(tab), meta: paneName(pane) + ' · ' + t(tab.document.editable ? 'readWrite' : 'readonly'), content: tab.content,
+    return [{ id, name: tabName(found.tab),
+      open() { showContextTab(findTab(id)); },
       remove() { state.attentions = state.attentions.filter((item) => item !== id); },
     }];
   }), 'noAttention', 'attention');
@@ -851,25 +841,78 @@ function renderAttentionCards() {
 function renderFocusCards() {
   renderCards(elements.focusList, state.focuses.map((focus) => ({
     id: focus.id, name: focus.sourceName,
-    meta: t('focusReady', { role: t(focus.role === 'target' ? 'focusTarget' : 'focusReference'), source: focus.title || t(focus.kind === 'selection' ? 'selectedText' : 'focusBlock'), line: focus.line }),
-    content: focus.text, warning: focusProblem(focus),
+    warning: focusProblem(focus),
+    open() {
+      if (focus.sourceKind === 'reference') return openReference(state.references.find((item) => item.id === focus.sourceId));
+      showContextTab(findTab(focus.sourceId));
+    },
     remove() { state.focuses = state.focuses.filter((item) => item.id !== focus.id); },
   })), 'noFocus', 'focus');
 }
 
-function addReference(tab, pane) {
+function showContextTab(found) {
+  if (!found) return toast(t('contextSourceMissing'), true);
+  setView('workspace');
+  selectTab(found.pane, found.tab.id);
+  found.pane.tabNodes.get(found.tab.id)?.select.focus({ preventScroll: true });
+  found.pane.element.scrollIntoView({ block: 'start', inline: 'nearest' });
+}
+
+async function openReference(reference) {
+  if (!reference) return toast(t('contextSourceMissing'), true);
+  let found = findTab(reference.sourceTabId);
+  if (!found) {
+    const pane = state.panes[reference.sourcePane];
+    if (reference.document.source === 'local') {
+      if (pane.loading) return toast(t('waitOpen'), true);
+      // A closed browser file can be restored from its reference snapshot.
+      // Keep its local identity even when a server file shares the same name.
+      const blankId = !activeTab(pane)?.document ? pane.activeTabId : null;
+      const tab = installDocument(pane, { ...reference.document, content: reference.content }, blankId, false);
+      found = { pane, tab };
+    } else {
+      const candidates = [pane, ...state.panes.filter((item) => item !== pane)];
+      for (const candidate of candidates) {
+        const tab = candidate.tabs.find((item) => item.document?.source !== 'local' && item.document?.name === reference.name);
+        if (tab) { found = { pane: candidate, tab }; break; }
+      }
+      if (!found) {
+        const tab = await openFile(pane, reference.name, { activate: false });
+        if (!tab) return;
+        found = { pane, tab };
+      }
+    }
+    reference.sourceTabId = found.tab.id;
+    reference.sourcePane = found.pane.index;
+  }
+  showContextTab(found);
+}
+
+function removeReference(id) {
+  state.references = state.references.filter((item) => item.id !== id);
+  state.focuses = state.focuses.filter((focus) => focus.sourceKind !== 'reference' || focus.sourceId !== id);
+}
+
+function toggleReference(tab, pane) {
   if (!supportsContext(tab.document?.type, 'reference')) return;
-  const key = 'tab:' + tab.id;
-  if (state.references.some((item) => item.key === key)) return;
-  if (tab.content.length > 40000) return toast(t('referenceTooLarge'), true);
-  state.references.push({ id: state.nextReferenceId++, key, sourcePane: pane.index, name: tab.document.name, type: tab.document.type, content: tab.content });
+  const existing = state.references.filter((item) => item.sourceTabId === tab.id);
+  if (existing.length) {
+    for (const reference of existing) removeReference(reference.id);
+  } else {
+    if (tab.content.length > 40000) return toast(t('referenceTooLarge'), true);
+    state.references.push({
+      id: state.nextReferenceId++, sourceTabId: tab.id, sourcePane: pane.index,
+      document: { ...tab.document }, name: tab.document.name, type: tab.document.type, content: tab.content,
+    });
+  }
   state.contextRevision += 1;
   renderAll();
 }
 
-function addAttention(tab) {
-  if (!supportsContext(tab.document?.type, 'attention') || state.attentions.includes(tab.id)) return;
-  state.attentions.push(tab.id);
+function toggleAttention(tab) {
+  if (!supportsContext(tab.document?.type, 'attention')) return;
+  if (state.attentions.includes(tab.id)) state.attentions = state.attentions.filter((id) => id !== tab.id);
+  else state.attentions.push(tab.id);
   state.contextRevision += 1;
   renderAll();
 }

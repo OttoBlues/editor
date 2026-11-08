@@ -93,7 +93,7 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .context-actions { display: flex; flex: none; align-items: center; gap: 3px; margin-left: auto; }
 .context-action.icon-button { width: 29px; height: 29px; }
 .context-action .icon { width: 16px; height: 16px; }
-.context-action.is-added:disabled { opacity: .55; color: var(--accent-strong); background: var(--accent-soft); }
+.context-action.is-added { color: var(--accent-strong); background: var(--accent-soft); }
 .context-action[aria-expanded="true"] { color: var(--accent-strong); background: var(--accent-soft); }
 .mode-switch { flex: none; display: flex; height: 31px; gap: 8px; }
 .mode-switch button { border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 0 2px; color: #94929f; font-size: 11px; white-space: nowrap; }
@@ -154,20 +154,15 @@ select { min-height: 31px; border: 1px solid #dedce5; border-radius: 3px; backgr
 .secondary-button:not(:disabled):hover { background: var(--accent-soft); }
 .context-list { display: flex; flex-direction: column; gap: 7px; }
 .context-empty { color: #aaa7b2; font-size: 10px; margin: 0; }
-.context-card { position: relative; min-width: 0; width: 100%; border: 1px solid #e7e4ed; border-radius: 5px; background: #fff; }
-.context-card details { min-width: 0; }
-.context-card summary { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 10px 34px 10px 11px; cursor: pointer; list-style: none; }
-.context-card summary::-webkit-details-marker { display: none; }
-.context-card summary > .icon { flex: none; width: 16px; height: 16px; color: #9890ac; }
-.context-card-label { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; }
-.context-card-label strong { color: #5c5768; font-size: 11px; font-weight: 500; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
-.context-card-meta { font-size: 10px; color: #a29baa; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.context-card pre { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #f6f5f8; color: #595763; padding: 9px; margin: 0 10px 10px; font: 10px/1.7 Consolas, "Microsoft YaHei UI", monospace; }
-.context-remove.icon-button { position: absolute; right: 5px; top: 12px; width: 24px; height: 24px; }
+.context-card { display: flex; align-items: center; min-width: 0; width: 100%; border: 1px solid #e7e4ed; border-radius: 5px; background: #fff; }
+.context-open { display: flex; flex: 1; align-items: center; gap: 9px; min-width: 0; padding: 11px; border: 0; border-radius: 4px; background: transparent; text-align: left; }
+.context-open:hover { background: var(--accent-soft); }
+.context-open > .icon { flex: none; width: 16px; height: 16px; color: #9890ac; }
+.context-card-label { min-width: 0; color: #5c5768; font-size: 11px; font-weight: 500; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.context-remove.icon-button { flex: none; margin-right: 5px; width: 24px; height: 24px; }
 .context-remove .icon { width: 12px; height: 12px; }
 .context-card.has-warning { border-color: #d7bb91; }
-.context-card.has-warning summary > .icon { color: #a26c3c; }
-.context-card .context-warning { margin: 0 10px 10px; }
+.context-card.has-warning .context-open > .icon { color: #a26c3c; }
 .text-button { border: 0; background: transparent; color: #9996a2; padding: 2px; font-size: 10px; }
 .text-button:hover { color: var(--accent-strong); }
 .focus-picker { position: fixed; z-index: 20; width: min(320px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow-y: auto; padding: 14px; border: 1px solid #e2ddeb; border-radius: 6px; background: #fff; box-shadow: 0 7px 24px #2520331c; }
