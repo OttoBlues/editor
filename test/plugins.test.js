@@ -53,3 +53,39 @@ test('large documents expose bounded pages while preserving section boundaries',
   assert.equal(lastPage.blocks.length, 5);
   assert.equal(paragraphs.slice(lastPage.blocks[0].start, lastPage.blocks[0].end), '段落 400');
 });
+
+test('Markdown focus modes isolate paragraphs, Mermaid diagrams, tables and code with exact Unicode offsets', () => {
+  const source = '# 标题 😀\n\n正文 😀\n下一行\n\n```mermaid\nflowchart LR\n A --> B\n```\n\n| 名称 | 内容 |\n| :--- | ---: |\n| A\\|B | 示例 |\n\n~~~js\n# not a heading\n~~~\n\n尾段\n';
+  const slice = (kind) => blocksFor('markdown', source, kind).map((block) => source.slice(block.start, block.end));
+  assert.deepEqual(slice('paragraph'), ['正文 😀\n下一行', '尾段']);
+  assert.deepEqual(slice('diagram'), ['```mermaid\nflowchart LR\n A --> B\n```']);
+  assert.deepEqual(slice('table'), ['| 名称 | 内容 |\n| :--- | ---: |\n| A\\|B | 示例 |']);
+  assert.deepEqual(slice('code'), ['~~~js\n# not a heading\n~~~']);
+  assert.equal(blocksFor('markdown', source, 'diagram')[0].line, 6);
+  assert.deepEqual(pluginFor('markdown').focusModes, ['section', 'paragraph', 'diagram', 'table', 'code', 'selection']);
+  assert.deepEqual(blocksFor('text', source, 'table'), []);
+});
+
+test('fence length, unfinished fences, indentation and setext headings do not leak into other focus modes', () => {
+  const source = 'Title\n=====\ntext\n\n````mermaid\n```\n# inside\n| a | b |\n| --- | --- |\n````\n\n    # indented code\n\n## End\nlast';
+  assert.deepEqual(blocksFor('markdown', source).map((block) => block.title), ['Title', 'End']);
+  assert.deepEqual(blocksFor('markdown', source, 'table'), []);
+  const diagram = blocksFor('markdown', source, 'diagram')[0];
+  assert.equal(source.slice(diagram.start, diagram.end), '````mermaid\n```\n# inside\n| a | b |\n| --- | --- |\n````');
+  const code = blocksFor('markdown', source, 'code')[0];
+  assert.equal(source.slice(code.start, code.end), '    # indented code');
+  const unfinished = 'before\n\n~~~mermaid\nA --> B\n';
+  assert.equal(blocksFor('markdown', unfinished, 'diagram')[0].end, unfinished.length - 1);
+  assert.deepEqual(blocksFor('markdown', '| not\\|a table |\n| --- | --- |\n', 'table'), []);
+});
+
+test('typed focus pagination counts only the requested block kind', () => {
+  const source = Array.from({ length: 205 }, (_, index) => '# Header\n\n```mermaid\nA' + index + ' --> B\n```\n\n').join('');
+  const first = blocksPage('markdown', source, 0, 200, 'diagram');
+  const second = blocksPage('markdown', source, 1, 200, 'diagram');
+  assert.equal(first.blocks.length, 200);
+  assert.equal(first.hasNext, true);
+  assert.equal(second.blocks.length, 5);
+  assert.equal(second.hasNext, false);
+  assert.match(source.slice(second.blocks[0].start, second.blocks[0].end), /A200 --> B/);
+});

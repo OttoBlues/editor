@@ -47,8 +47,11 @@ export function suggest({ content, prompt, type, focus = null, focuses = focus ?
       previousEnd = end;
     }
     after = content;
-    for (const { start, end, text } of targets.reverse()) {
-      const replacement = simulate(text, prompt, type, referenceText, language);
+    for (const { start, end, text, annotation } of targets.reverse()) {
+      // Each range carries its own user instructions. The rule-based demo uses
+      // those instructions for that range, falling back to the general request.
+      const direction = typeof annotation === 'string' && annotation.trim() ? annotation.trim() : prompt;
+      const replacement = simulate(text, direction, type, referenceText, language);
       after = after.slice(0, start) + replacement + after.slice(end);
     }
   } else {

@@ -45,3 +45,20 @@ test('English rules and output-size limits are explicit', () => {
   assert.throws(() => suggest({ content: 'x', prompt: 'Insert reference', type: 'text', referenceText: 'x'.repeat(40001) }),
     (error) => error instanceof SuggestionError && error.code === 'too_large');
 });
+
+test('each focus annotation directs only its own range and overrides the general simulated rule', () => {
+  const content = 'first   \nline\n\nKEEP 😀\n\nlast';
+  const focus = (start, end, annotation) => ({ role: 'target', start, end, text: content.slice(start, end), documentSnapshot: content, annotation });
+  const focuses = [focus(0, 13, 'Tidy spacing'), focus(content.indexOf('last'), content.length, 'Add title')];
+  const after = suggest({ content, type: 'text', prompt: 'Summary', focuses, language: 'en' });
+  assert.equal(after, 'first\nline\n\nKEEP 😀\n\nDocument title\n\nlast');
+  assert.equal(suggest({ content, type: 'text', prompt: '', focuses, language: 'en' }), after);
+  assert.throws(() => suggest({ content: content + 'changed', type: 'text', prompt: '', focuses }), { code: 'stale_focus' });
+});
+
+test('reference focus annotations never become modification targets or replace source text', () => {
+  const content = 'target';
+  const focuses = [{ role: 'reference', text: 'source', annotation: 'Add title', start: 0, end: 6, documentSnapshot: 'source' }];
+  assert.equal(suggest({ content, type: 'text', prompt: 'Insert reference', focuses, referenceText: 'source', language: 'en' }), 'target\n\nsource');
+  assert.equal(focuses[0].annotation, 'Add title');
+});
