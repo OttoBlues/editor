@@ -1,6 +1,9 @@
 export const messages = {
   'zh-CN': {
-    workspace: '工作空间', plugins: '插件', settings: '设置', navigation: '主导航',
+    workspace: '工作空间', plugins: '插件', models: '模型', settings: '设置', navigation: '主导航',
+    modelConfiguration: '模型配置', modelNotConnected: '尚未接入', modelDisplayName: '显示名称', modelEndpoint: '服务地址', modelIdentifier: '模型标识',
+    modelShellHelp: '配置界面预览，暂不连接模型；填写内容仅在本次页面会话中保留。',
+    modelShellBoundary: '连接、凭据管理与实际调用将在工程化阶段设计；智能编辑当前仍使用本地模拟。',
     files: '文件', openFile: '打开文件', refreshFiles: '刷新文件列表', noFiles: '没有可显示的文件。',
     fileUnavailable: '链接或不可访问', unsupported: '不支持的文件类型', cannotOpenLink: '不能打开链接或非普通文件。',
     onlyText: '演示只支持 .txt 和 .md 文件。', loading: '正在打开…', waitOpen: '请等待文件打开。',
@@ -82,7 +85,10 @@ export const messages = {
     genericServerError: '读取或保存失败，请确认文件可访问后重试。',
   },
   en: {
-    workspace: 'Workspace', plugins: 'Plugins', settings: 'Settings', navigation: 'Navigation',
+    workspace: 'Workspace', plugins: 'Plugins', models: 'Models', settings: 'Settings', navigation: 'Navigation',
+    modelConfiguration: 'Model configuration', modelNotConnected: 'Not connected', modelDisplayName: 'Display name', modelEndpoint: 'Service address', modelIdentifier: 'Model ID',
+    modelShellHelp: 'Configuration preview only. Draft values stay in this page session; no model connection is made.',
+    modelShellBoundary: 'Connections, credential storage and model calls will be designed in the engineering phase. Intelligent editing still uses the local simulation.',
     files: 'Files', openFile: 'Open file', refreshFiles: 'Refresh files', noFiles: 'No files available.',
     fileUnavailable: 'Link or inaccessible', unsupported: 'Unsupported file type', cannotOpenLink: 'Links and non-regular files cannot be opened.',
     onlyText: 'This demo supports only .txt and .md files.', loading: 'Opening…', waitOpen: 'Wait for the file to open.',

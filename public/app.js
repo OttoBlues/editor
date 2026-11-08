@@ -442,9 +442,9 @@ function renderAll() {
   updateDividerOrientation();
   for (const pane of state.panes) renderPane(pane);
   const hiddenDirty = !state.split && state.panes.some((item) => item.index !== state.active && item.tabs.some(dirty));
-  $('.layout-label', elements.split).textContent = t(state.split ? 'single' : 'split');
   $('.layout-dirty', elements.split).hidden = !hiddenDirty;
   elements.split.dataset.active = String(state.split);
+  elements.split.setAttribute('aria-pressed', String(state.split));
   elements.split.setAttribute('aria-label', t(state.split ? 'closeSplit' : 'openSplit') + (hiddenDirty ? ' · ' + t('hiddenDirty') : ''));
   elements.split.title = hiddenDirty ? t('hiddenDirty') : t(state.split ? 'closeSplit' : 'openSplit');
   renderFiles();
@@ -1365,7 +1365,7 @@ function renderPlugins() {
 
 function setView(view) {
   state.view = view;
-  for (const name of ['workspace', 'plugins', 'settings']) {
+  for (const name of ['workspace', 'plugins', 'models', 'settings']) {
     $('#' + name + '-view').hidden = name !== view;
     const button = document.querySelector('[data-view="' + name + '"]');
     button.classList.toggle('active', name === view);

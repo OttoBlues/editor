@@ -28,6 +28,7 @@
       <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4.5 4.5L19 7"/></symbol>
       <symbol id="i-edit" viewBox="0 0 24 24"><path d="m15.5 4.5 4 4M4 20l4.5-1 11-11a2.8 2.8 0 0 0-4-4l-11 11z"/></symbol>
       <symbol id="i-split" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M12 4.5v15"/></symbol>
+      <symbol id="i-model" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/><circle cx="12" cy="12" r="2.5"/></symbol>
     </svg>
 
     <div class="app-shell">
@@ -36,6 +37,7 @@
         <nav class="main-nav" data-i18n-aria="navigation">
           <button type="button" class="nav-button active" data-view="workspace"><svg class="icon"><use href="#i-workspace"></use></svg><span data-i18n="workspace">工作空间</span></button>
           <button type="button" class="nav-button" data-view="plugins"><svg class="icon"><use href="#i-plugins"></use></svg><span data-i18n="plugins">插件</span></button>
+          <button type="button" class="nav-button" data-view="models"><svg class="icon"><use href="#i-model"></use></svg><span data-i18n="models">模型</span></button>
           <button type="button" class="nav-button" data-view="settings"><svg class="icon"><use href="#i-settings"></use></svg><span data-i18n="settings">设置</span></button>
         </nav>
       </aside>
@@ -44,7 +46,7 @@
         <section id="workspace-view" class="workspace-layout" data-i18n-aria="editor">
           <section class="editors-section" data-i18n-aria="editor">
             <div id="panes" class="panes"><div id="pane-divider" class="pane-divider" role="separator" tabindex="0" aria-orientation="vertical" aria-valuemin="20" aria-valuemax="80" aria-valuenow="50" data-i18n-aria="resize" hidden></div></div>
-            <button id="split-toggle" class="layout-button" type="button" data-active="false" data-i18n-aria="openSplit"><svg class="icon"><use href="#i-split"></use></svg><span class="layout-label" data-i18n="split">分栏</span><span class="layout-dirty" hidden></span></button>
+            <button id="split-toggle" class="icon-button layout-button" type="button" data-active="false" aria-pressed="false" data-i18n-aria="openSplit"><svg class="icon" aria-hidden="true"><use href="#i-split"></use></svg><span class="layout-dirty" aria-hidden="true" hidden></span></button>
           </section>
           <aside class="assistant-panel" aria-labelledby="assistant-title">
             <div class="assistant-heading"><div class="spark-icon"><svg class="icon"><use href="#i-spark"></use></svg></div><h2 id="assistant-title" data-i18n="assistant">智能编辑</h2></div>
@@ -72,6 +74,19 @@
         <section id="plugins-view" class="page-view" hidden>
           <div id="plugin-overview"><h1 data-i18n="plugins">插件</h1><h2 class="page-subtitle" data-i18n="installedPlugins">已安装</h2><div id="plugin-list" class="plugin-list"></div><p class="page-note" data-i18n="pluginBoundary">演示仅包含内置插件，暂不支持安装外部插件。</p></div>
           <div id="plugin-config" hidden><button id="plugin-back" type="button" class="text-button" data-i18n="backToPlugins">返回插件</button><h1 id="plugin-config-title"></h1><p id="plugin-config-description" class="page-note"></p><div class="setting-row"><label for="plugin-focus-mode" data-i18n="pluginFocusMode">聚焦选取方式</label><select id="plugin-focus-mode"><option value="structure" data-i18n="focusModeStructure">按文档结构</option><option value="selection" data-i18n="focusModeSelection">当前选取</option></select></div><p class="page-note" data-i18n="pluginConfigHelp">设置自动保存，仅用于此插件打开的文件。</p></div>
+        </section>
+        <section id="models-view" class="page-view" hidden aria-labelledby="models-title">
+          <h1 id="models-title" data-i18n="models">模型</h1>
+          <div class="model-shell">
+            <div class="model-shell-heading"><svg class="icon" aria-hidden="true"><use href="#i-model"></use></svg><h2 data-i18n="modelConfiguration">模型配置</h2><span class="model-shell-status" data-i18n="modelNotConnected">尚未接入</span></div>
+            <p class="page-note" data-i18n="modelShellHelp">配置界面预览，暂不连接模型；填写内容仅在本次页面会话中保留。</p>
+            <div class="model-draft-fields">
+              <label class="model-field"><span data-i18n="modelDisplayName">显示名称</span><input id="model-name" type="text" maxlength="100" autocomplete="off"></label>
+              <label class="model-field"><span data-i18n="modelEndpoint">服务地址</span><input id="model-endpoint" type="url" maxlength="500" autocomplete="off" spellcheck="false"></label>
+              <label class="model-field"><span data-i18n="modelIdentifier">模型标识</span><input id="model-id" type="text" maxlength="100" autocomplete="off" spellcheck="false"></label>
+            </div>
+            <p class="page-note" data-i18n="modelShellBoundary">连接、凭据管理与实际调用将在工程化阶段设计；智能编辑当前仍使用本地模拟。</p>
+          </div>
         </section>
         <section id="settings-view" class="page-view" hidden>
           <h1 data-i18n="settings">设置</h1>
