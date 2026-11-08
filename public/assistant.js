@@ -55,7 +55,24 @@ export function suggest({ content, prompt, type, focus = null, focuses = focus ?
         // A deterministic merge demo: move selected text to the first range in
         // source order. Never include or delete the unselected gaps between them.
         replacements.fill('');
-        replacements[0] = group.map((range) => range.text).join('\n\n');
+        replacements[0] = group.reduce((joined, range, index) => {
+          if (!index) return range.text;
+          const separatingLines = /\n*$/.exec(joined)[0].length + /^\n*/.exec(range.text)[0].length;
+          return joined + '\n'.repeat(Math.max(0, 2 - separatingLines)) + range.text;
+        }, '');
+        // Structural ranges own their trailing separator. Keep that boundary
+        // at the insertion point even when the last moved range has no newline.
+        let boundary = group[0].end;
+        for (const range of group.slice(1)) {
+          if (range.start !== boundary) break;
+          boundary = range.end;
+        }
+        if (boundary < content.length) {
+          const boundaryLines = /\n*$/.exec(group[0].text)[0].length;
+          const trailingLines = /\n*$/.exec(replacements[0])[0].length;
+          const followingLines = /^\n*/.exec(content.slice(boundary))[0].length;
+          replacements[0] += '\n'.repeat(Math.max(0, boundaryLines - trailingLines - followingLines));
+        }
       } else if (/空行|整理|blank|spacing/i.test(direction) && !/引用|参考|reference/i.test(direction)) {
         group.forEach((range, index) => { replacements[index] = simulate(range.text, direction, type, referenceText, language); });
       } else {

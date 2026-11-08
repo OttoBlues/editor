@@ -1,8 +1,8 @@
 // Built-in adapters operate on the editor's exact in-memory text. Offsets are
 // JavaScript string offsets and always refer to slices of the supplied text.
 export const plugins = Object.freeze([
-  { id: 'markdown', type: 'markdown', extension: '.md', preview: true, blocks: 'structured', focusModes: Object.freeze(['section', 'paragraph', 'diagram', 'table', 'code', 'selection']), render: renderMarkdown, capabilities: Object.freeze({ reference: true, attention: true, focus: true }) },
-  { id: 'text', type: 'text', extension: '.txt', preview: false, blocks: 'paragraphs', focusModes: Object.freeze(['paragraph', 'selection']), capabilities: Object.freeze({ reference: true, attention: true, focus: true }) },
+  { id: 'markdown', type: 'markdown', extension: '.md', preview: true, blocks: 'structured', focusModes: Object.freeze(['structure', 'selection']), render: renderMarkdown, capabilities: Object.freeze({ reference: true, attention: true, focus: true }) },
+  { id: 'text', type: 'text', extension: '.txt', preview: false, blocks: 'paragraphs', focusModes: Object.freeze(['structure', 'selection']), capabilities: Object.freeze({ reference: true, attention: true, focus: true }) },
 ]);
 
 export function pluginFor(type) {
@@ -92,6 +92,14 @@ function isTableHeader(line, next) {
   return header?.length > 0 && header.length === delimiter?.length && delimiter.every((cell) => /^:?-+:?$/.test(cell));
 }
 
+function isRule(line) {
+  return /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(line);
+}
+
+function isListItem(line) {
+  return /^ {0,3}(?:[-+*]|\d+[.)])(?:[ \t]+|$)/.test(line) && !isRule(line);
+}
+
 // Recognize top-level source blocks without rendering HTML or executing diagrams.
 // Two-line lookahead keeps pagination bounded even for large documents.
 function* markdownParts(text) {
@@ -106,7 +114,7 @@ function* markdownParts(text) {
     return buffer[index];
   }
   function take() { const line = peek(); buffer.shift(); return line; }
-  const isBoundary = (line) => fenceStart(line) || /^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|[-+*][ \t]|\d+[.)][ \t]|(?:[-*_][ \t]*){3,}$)/.test(line);
+  const isBoundary = (line) => fenceStart(line) || isListItem(line) || isRule(line) || /^ {0,3}(?:#{1,6}(?:[ \t]|$)|>)/.test(line);
   while (peek()) {
     const first = peek();
     if (!first.text.trim()) { take(); continue; }
@@ -130,6 +138,34 @@ function* markdownParts(text) {
       yield { kind: 'code', start: first.offset, end: last.offset + last.text.length, line: first.line };
       continue;
     }
+    if (isRule(first.text)) {
+      take();
+      yield { kind: 'rule', start: first.offset, end: first.offset + first.text.length, line: first.line };
+      continue;
+    }
+    if (isListItem(first.text)) {
+      let last = take();
+      let separated = false;
+      // Keep adjacent items, nested items and indented continuations together.
+      // Blank separators are included only if another list line follows.
+      while (peek()) {
+        const line = peek();
+        if (!line.text.trim()) { take(); separated = true; continue; }
+        if (isRule(line.text)) break;
+        if (!isListItem(line.text) && !/^(?: {2,}|\t)/.test(line.text) &&
+          (separated || isBoundary(line.text) || headingAt(line.text, peek(1)?.text) || isTableHeader(line.text, peek(1)?.text))) break;
+        last = take();
+        separated = false;
+      }
+      yield { kind: 'list', start: first.offset, end: last.offset + last.text.length, line: first.line };
+      continue;
+    }
+    if (/^ {0,3}>/.test(first.text)) {
+      let last = take();
+      while (peek() && /^ {0,3}>/.test(peek().text)) last = take();
+      yield { kind: 'quote', start: first.offset, end: last.offset + last.text.length, line: first.line };
+      continue;
+    }
     const heading = headingAt(first.text, peek(1)?.text);
     if (heading) {
       let last = take();
@@ -140,7 +176,7 @@ function* markdownParts(text) {
     if (isTableHeader(first.text, peek(1)?.text)) {
       take();
       let last = take();
-      while (peek()?.text.trim() && !isBoundary(peek().text)) last = take();
+      while (peek()?.text.trim() && tableCells(peek().text) && !isBoundary(peek().text) && !headingAt(peek().text, peek(1)?.text)) last = take();
       yield { kind: 'table', start: first.offset, end: last.offset + last.text.length, line: first.line };
       continue;
     }
@@ -148,6 +184,31 @@ function* markdownParts(text) {
     while (peek()?.text.trim() && !isBoundary(peek().text) && !headingAt(peek().text, peek(1)?.text) && !isTableHeader(peek().text, peek(1)?.text)) last = take();
     yield { kind: 'paragraph', start: first.offset, end: last.offset + last.text.length, line: first.line };
   }
+}
+
+function* aggregatedMarkdown(text) {
+  let pending = null;
+  for (const block of markdownParts(text)) {
+    // Only the prose immediately following a heading belongs to that heading.
+    // Lists, tables, diagrams and code remain independent selectable units.
+    if (pending?.kind === 'heading' && block.kind === 'paragraph') {
+      pending.end = block.end;
+      continue;
+    }
+    if (pending) yield pending;
+    pending = { ...block };
+  }
+  if (pending) yield pending;
+}
+
+function* coveredBlocks(text, blocks) {
+  let pending = null;
+  for (const block of blocks) {
+    if (pending) yield { ...pending, end: block.start };
+    pending = { ...block, start: pending ? block.start : 0, line: pending ? block.line : 1 };
+  }
+  if (pending) yield { ...pending, end: text.length };
+  else if (text.length) yield { kind: 'document', start: 0, end: text.length, line: 1 };
 }
 
 function* markdownBlocks(text) {
@@ -167,17 +228,21 @@ function* markdownBlocks(text) {
 }
 
 function* documentBlocks(type, text, kind) {
+  if (kind === 'structure') {
+    yield* coveredBlocks(text, type === 'text' ? paragraphs(text) : aggregatedMarkdown(text));
+    return;
+  }
   if (type === 'text') { if (['section', 'paragraph'].includes(kind)) yield* paragraphs(text); return; }
   if (kind === 'section') { yield* markdownBlocks(text); return; }
   for (const block of markdownParts(text)) if (block.kind === kind) yield block;
 }
 
-export function blocksFor(type, text, kind = 'section') {
+export function blocksFor(type, text, kind = 'structure') {
   if (typeof text !== 'string' || !pluginFor(type)) return [];
   return [...documentBlocks(type, text, kind)];
 }
 
-export function blocksPage(type, text, page = 0, pageSize = 200, kind = 'section') {
+export function blocksPage(type, text, page = 0, pageSize = 200, kind = 'structure') {
   if (typeof text !== 'string' || !pluginFor(type)) return { blocks: [], hasNext: false };
   const offset = Math.max(0, Math.floor(page)) * pageSize;
   const blocks = [];

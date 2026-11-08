@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { suggest, SuggestionError } from '../public/assistant.js';
 import { focusText, validFocus } from '../public/focus.js';
+import { blocksFor } from '../public/plugins.js';
 
 function group(content, pieces, annotation = 'Merge') {
   return { role: 'target', documentSnapshot: content, annotation,
@@ -16,6 +17,16 @@ test('one grouped merge combines selected blocks in source order and preserves e
     'BEFORE\n\nalpha 😀\n\nomega\n\nKEEP BETWEEN\n\n\n\nAFTER');
   assert.deepEqual(focus, saved);
   assert.equal(focusText(focus), 'alpha 😀\n\nomega');
+});
+
+test('merging structural blocks retains separators without joining unselected text or doubling blank lines', () => {
+  const content = 'first 😀\n\nKEEP   MIDDLE\n\nlast';
+  const blocks = blocksFor('text', content);
+  const focus = { role: 'target', documentSnapshot: content, annotation: 'Merge', ranges: [blocks[0], blocks[2]].map((block) => ({ ...block, text: content.slice(block.start, block.end) })) };
+  assert.equal(suggest({ content, prompt: '', type: 'text', focus }), 'first 😀\n\nlast\n\nKEEP   MIDDLE\n\n');
+  const adjacent = 'first\n\nlast\n';
+  const all = { role: 'target', documentSnapshot: adjacent, annotation: 'Merge', ranges: blocksFor('text', adjacent).map((block) => ({ ...block, text: adjacent.slice(block.start, block.end) })) };
+  assert.equal(suggest({ content: adjacent, prompt: '', type: 'text', focus: all }), adjacent);
 });
 
 test('group instructions are applied once while spacing can transform each selected slice', () => {

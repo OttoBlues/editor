@@ -1,7 +1,7 @@
 import { blocksPage, plugins, pluginFor, supportsContext } from './plugins.js';
 import { readLocalFile, localFileBlob } from './local-files.js';
 import { suggest, SuggestionError } from './assistant.js';
-import { focusRanges, rangesOverlap, validFocus, focusText } from './focus.js';
+import { focusRanges, rangesOverlap, validFocus, focusText, focusCanvasBlocks } from './focus.js';
 import { translate, serverMessage } from './i18n.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -978,7 +978,7 @@ function blockKey(block) {
 function blockLabel(block) {
   if (block.kind === 'selection') return t('selectionBlock', { line: block.line });
   if (block.kind === 'heading') return t('headingBlock', { title: block.title || t('unnamedHeading'), line: block.line });
-  const key = { preamble: 'preambleBlock', document: 'documentBlock', diagram: 'diagramBlock', table: 'tableBlock', code: 'codeBlock' }[block.kind];
+  const key = { preamble: 'preambleBlock', document: 'documentBlock', diagram: 'diagramBlock', table: 'tableBlock', code: 'codeBlock', list: 'listBlock', quote: 'quoteBlock', rule: 'ruleBlock' }[block.kind];
   if (key) return t(key, { line: block.line });
   return t('paragraphBlock', { line: block.line });
 }
@@ -1078,10 +1078,20 @@ function renderFocusCanvas(pane) {
   }
   if (!showBlocks) return;
   view.hidden = false;
-  // Keep selected blocks across modes/pages; hide candidates that overlap them.
-  const candidates = manual ? [] : state.focusBlocks;
-  const blocks = [...selected, ...candidates.filter((block) => !selected.some((range) => rangesOverlap(range, block)))].sort((a, b) => a.start - b.start);
-  const key = blocks.map(blockKey).join('|') + ':' + state.language + ':' + source.kind + ':' + source.name;
+  // Page only the structural view; manual selection still exposes all text.
+  // Selections crossing a page edge stay whole and can be cancelled there.
+  const candidates = manual || secondStep ? [] : state.focusBlocks;
+  let start = 0;
+  let end = source.content.length;
+  if (!manual && !secondStep && candidates.length) {
+    start = candidates[0].start;
+    end = candidates.at(-1).end;
+    const visible = selected.filter((range) => rangesOverlap(range, { start, end }));
+    start = Math.min(start, ...visible.map((range) => range.start));
+    end = Math.max(end, ...visible.map((range) => range.end));
+  }
+  const blocks = focusCanvasBlocks(source.content, candidates, selected, start, end);
+  const key = blocks.map((block) => blockKey(block) + ':' + block.kind).join('|') + ':' + state.language + ':' + source.kind + ':' + source.name;
   if (pane.focusCanvasKey !== key || pane.focusCanvasSnapshot !== source.content) {
     const focusedKey = view.contains(document.activeElement) ? document.activeElement.dataset.range : null;
     const scrollTop = view.scrollTop;
@@ -1092,16 +1102,7 @@ function renderFocusCanvas(pane) {
       label.textContent = t('focusSnapshotSource', { name: source.name });
       view.append(label);
     }
-    let offset = 0;
-    function gap(end) {
-      if (end <= offset) return;
-      const text = document.createElement('pre');
-      text.className = 'focus-gap';
-      text.textContent = source.content.slice(offset, end);
-      view.append(text);
-    }
     for (const block of blocks) {
-      gap(block.start);
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'focus-source-block';
@@ -1123,9 +1124,7 @@ function renderFocusCanvas(pane) {
       button.append(marker, text);
       button.addEventListener('click', () => toggleFocusBlock(block));
       view.append(button);
-      offset = block.end;
     }
-    gap(source.content.length);
     if (!blocks.length) {
       const empty = document.createElement('p');
       empty.className = 'focus-hint';
@@ -1143,7 +1142,7 @@ function renderFocusCanvas(pane) {
   }
   const location = state.focusPickerSource + ':' + elements.focusMode.value + ':' + state.focusPage + ':' + state.focusStep;
   if (pane.focusCanvasLocation !== location) {
-    const first = secondStep ? selected[0] : candidates[0] || selected[0];
+    const first = secondStep ? selected[0] : blocks[0];
     const button = first && [...view.querySelectorAll('[data-range]')].find((item) => item.dataset.range === blockKey(first));
     view.scrollTop = button ? Math.max(0, button.offsetTop - 20) : 0;
     pane.focusCanvasLocation = location;
@@ -1274,7 +1273,7 @@ function renderFocusPicker() {
     if (sources.some((source) => sourceValue(source) === previousSource)) elements.focusSource.value = previousSource;
     const source = pickerSource();
     const modes = (pluginFor(source?.type)?.focusModes || []).filter((mode) => mode !== 'selection' || source.kind === 'tab');
-    const modeKeys = { section: 'focusModeSection', paragraph: 'focusModeParagraph', diagram: 'focusModeDiagram', table: 'focusModeTable', code: 'focusModeCode', selection: 'focusModeSelection' };
+    const modeKeys = { structure: 'focusModeStructure', selection: 'focusModeSelection' };
     elements.focusMode.replaceChildren(...modes.map((mode) => new Option(t(modeKeys[mode]), mode)));
     if (modes.includes(previousMode)) elements.focusMode.value = previousMode;
     const mode = elements.focusMode.value;
@@ -1291,7 +1290,7 @@ function renderFocusPicker() {
     elements.focusSource.disabled = !sources.length;
     elements.focusMode.disabled = !modes.length;
     elements.focusContinue.disabled = !source || !state.focusSelected.length;
-    $('#focus-mode-hint').textContent = t(mode === 'selection' ? 'focusSelectionHint' : mode === 'section' ? 'focusSectionHint' : 'focusBlockHint');
+    $('#focus-mode-hint').textContent = t(mode === 'selection' ? 'focusSelectionHint' : source?.type === 'text' ? 'focusTextHint' : 'focusStructureHint');
     $('.focus-legend').hidden = mode === 'selection' && !state.focusManualReview;
     $('#focus-pages').hidden = mode === 'selection' || (state.focusPage === 0 && !page.hasNext);
     $('#focus-page').textContent = t('pageNumber', { n: state.focusPage + 1 });

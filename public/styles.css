@@ -172,7 +172,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .editor-input { margin: 0; border: 0; font-family: "Cascadia Code", Consolas, "Microsoft YaHei UI", monospace; font-size: 13px; line-height: 1.9; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; padding: 22px 24px; color: var(--text-body); background: transparent; flex: 1; resize: none; outline: 0; min-width: 0; overflow: auto; }
 .editor-input:focus-visible { outline: none; }
 .focus-block-view { position: absolute; inset: 0; overflow: auto; padding: 20px 24px 32px; background: var(--surface); scrollbar-gutter: stable; }
-.focus-source-block, .focus-gap { white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; font: 13px/1.9 "Cascadia Code", Consolas, "Microsoft YaHei UI", monospace; text-align: left; color: var(--text-body); }
+.focus-source-block { white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; font: 13px/1.9 "Cascadia Code", Consolas, "Microsoft YaHei UI", monospace; text-align: left; color: var(--text-body); }
 .focus-source-block { position: relative; display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 12px; width: 100%; min-width: 0; margin: 2px 0; padding: 10px 12px; border: 0; border-radius: 6px; background: transparent; }
 .focus-source-block::before { content: ''; position: absolute; top: 10px; bottom: 10px; left: 0; width: 2px; border-radius: 2px; background: var(--border-subtle); }
 .focus-source-block:not([aria-disabled="true"]):hover { background: var(--surface-muted); }
@@ -185,7 +185,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .focus-source-block[aria-pressed="true"] .focus-block-marker { border-color: var(--accent); background: var(--accent); }
 .focus-source-block[aria-pressed="true"] .focus-block-marker .icon { visibility: visible; }
 .focus-block-text { min-width: 0; }
-.focus-gap { margin: 0; padding-left: 42px; color: var(--text-muted); }
 .focus-source-label { color: var(--text-muted); font-size: 11px; margin: 0 0 14px; }
 .focus-selection-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border-subtle); }
 .focus-selection-count { margin-left: auto; color: var(--text-muted); font-size: 10px; }
