@@ -1,0 +1,48 @@
+# Local configuration and credentials. Review examples before committing.
+.env
+.env.*
+!.env.example
+*.local.json
+*.local.yaml
+*.local.yml
+*.local.toml
+*.local.ini
+*.key
+*.pem
+*.p12
+*.pfx
+
+# User content, sessions, databases, and logs.
+/data/
+/user-data/
+/local-data/
+/.local/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.log
+
+# Dependencies, caches, and generated output.
+node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+/.cache/
+/build/
+/dist/
+/target/
+/coverage/
+
+# Editor, operating system, and temporary files.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.tmp
+*.bak
+*~
