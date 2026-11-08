@@ -1,6 +1,60 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { suggest, SuggestionError } from '../public/assistant.js';
+import { focusText, validFocus } from '../public/focus.js';
+
+function group(content, pieces, annotation = 'Merge') {
+  return { role: 'target', documentSnapshot: content, annotation,
+    ranges: pieces.map((text) => ({ start: content.indexOf(text), end: content.indexOf(text) + text.length, text })) };
+}
+
+test('one grouped merge combines selected blocks in source order and preserves every unselected gap', () => {
+  const content = 'BEFORE\n\nalpha 😀\n\nKEEP BETWEEN\n\nomega\n\nAFTER';
+  const focus = group(content, ['omega', 'alpha 😀']);
+  const saved = structuredClone(focus);
+  assert.equal(suggest({ content, prompt: 'Summary', type: 'text', focus, language: 'en' }),
+    'BEFORE\n\nalpha 😀\n\nomega\n\nKEEP BETWEEN\n\n\n\nAFTER');
+  assert.deepEqual(focus, saved);
+  assert.equal(focusText(focus), 'alpha 😀\n\nomega');
+});
+
+test('group instructions are applied once while spacing can transform each selected slice', () => {
+  const content = 'first   \nline\n\nUNSELECTED   \n\nlast';
+  const focus = group(content, ['first   \nline', 'last'], 'Add title');
+  assert.equal(suggest({ content, prompt: '', type: 'markdown', focus, language: 'en' }), '# Document title\n\n' + content);
+  focus.annotation = 'Tidy spacing';
+  assert.equal(suggest({ content, prompt: '', type: 'text', focus, language: 'en' }), 'first\nline\n\nUNSELECTED   \n\nlast');
+  focus.annotation = 'Explain relationships';
+  assert.equal(suggest({ content, prompt: '', type: 'text', focus, language: 'en' }), content + '\n\n[Simulated suggestion: Explain relationships]');
+  focus.annotation = 'Insert reference';
+  assert.equal(suggest({ content, prompt: '', type: 'text', focus, referenceText: 'ref', language: 'en' }), content + '\n\nref');
+});
+
+test('interleaved groups edit independently without merging their bounding ranges', () => {
+  const content = 'alpha\n\nbeta\n\ngamma\n\ndelta';
+  const focuses = [group(content, ['alpha', 'gamma']), group(content, ['beta', 'delta'], 'Add title')];
+  assert.equal(suggest({ content, prompt: '', type: 'text', focuses, language: 'en' }),
+    'alpha\n\ngamma\n\nDocument title\n\nbeta\n\n\n\ndelta');
+});
+
+test('group validation rejects empty, stale, overlapping, duplicate and tampered ranges', () => {
+  const content = 'alpha\n\nbeta';
+  const focus = group(content, ['alpha', 'beta']);
+  assert.equal(validFocus(focus, content), true);
+  const malformed = [[], null, [null], [focus.ranges[0], focus.ranges[0]],
+    [{ start: 0, end: 0, text: '' }], [{ start: 0, end: 5, text: 'wrong' }],
+    [{ start: 1.5, end: 5, text: 'lpha' }], [{ start: 0, end: 99, text: content }]];
+  for (const ranges of malformed) {
+    assert.throws(() => suggest({ content, prompt: '', type: 'text', focus: { ...focus, ranges } }), { code: 'stale_focus' });
+  }
+  assert.throws(() => suggest({ content: content + 'changed', prompt: '', type: 'text', focus }), { code: 'stale_focus' });
+  assert.throws(() => suggest({ content, prompt: '', type: 'text', focuses: [focus, group(content, ['beta'])] }), { code: 'stale_focus' });
+});
+
+test('grouped reference text contains only selected slices and never becomes an edit target', () => {
+  const reference = { ...group('first\n\nSECRET GAP\n\nlast', ['first', 'last'], 'Merge'), role: 'reference' };
+  assert.equal(suggest({ content: 'target', prompt: 'Insert reference', type: 'text', focuses: [reference], referenceText: focusText(reference), language: 'en' }), 'target\n\nfirst\n\nlast');
+});
 
 test('multiple focused targets modify only their original ranges despite length changes', () => {
   const content = 'first\n\nkeep\n\nlast\n';

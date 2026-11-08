@@ -15,6 +15,7 @@ const staticFiles = new Map([
   ['/plugins.js', ['plugins.js', 'text/javascript; charset=utf-8']],
   ['/local-files.js', ['local-files.js', 'text/javascript; charset=utf-8']],
   ['/assistant.js', ['assistant.js', 'text/javascript; charset=utf-8']],
+  ['/focus.js', ['focus.js', 'text/javascript; charset=utf-8']],
   ['/i18n.js', ['i18n.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
 ]);

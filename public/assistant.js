@@ -1,3 +1,5 @@
+import { focusRanges, validFocus } from './focus.js';
+
 export class SuggestionError extends Error {
   constructor(code) {
     super(code);
@@ -36,22 +38,37 @@ export function suggest({ content, prompt, type, focus = null, focuses = focus ?
   if (typeof content !== 'string' || typeof prompt !== 'string') throw new SuggestionError('invalid_input');
   if (content.length > 40000 || content.split('\n').length > 400) throw new SuggestionError('too_large');
   let after;
-  const targets = focuses.filter((item) => item.role === 'target').sort((a, b) => a.start - b.start);
+  const targets = focuses.filter((item) => item.role === 'target');
   if (targets.length) {
+    if (targets.some((target) => !validFocus(target, content))) throw new SuggestionError('stale_focus');
+    const ranges = targets.flatMap(focusRanges).sort((a, b) => a.start - b.start);
     let previousEnd = -1;
-    for (const { start, end, text, documentSnapshot } of targets) {
-      if (documentSnapshot !== content || !Number.isInteger(start) || !Number.isInteger(end) ||
-        start < 0 || end < start || end > content.length || start < previousEnd || content.slice(start, end) !== text) {
-        throw new SuggestionError('stale_focus');
-      }
+    for (const { start, end } of ranges) {
+      if (start < previousEnd) throw new SuggestionError('stale_focus');
       previousEnd = end;
     }
+    const edits = targets.flatMap((target) => {
+      const group = [...focusRanges(target)].sort((a, b) => a.start - b.start);
+      const direction = typeof target.annotation === 'string' && target.annotation.trim() ? target.annotation.trim() : prompt;
+      const replacements = group.map((range) => range.text);
+      if (group.length > 1 && /合并|整合|merge|combine|reorgani[sz]e/i.test(direction)) {
+        // A deterministic merge demo: move selected text to the first range in
+        // source order. Never include or delete the unselected gaps between them.
+        replacements.fill('');
+        replacements[0] = group.map((range) => range.text).join('\n\n');
+      } else if (/空行|整理|blank|spacing/i.test(direction) && !/引用|参考|reference/i.test(direction)) {
+        group.forEach((range, index) => { replacements[index] = simulate(range.text, direction, type, referenceText, language); });
+      } else {
+        // Shared instructions create one title, summary, reference insertion or
+        // simulated note for the group, rather than repeating it for each block.
+        const prepend = !/引用|参考|reference/i.test(direction) && /标题|title|heading|摘要|总结|summary|summarize/i.test(direction);
+        const index = prepend ? 0 : group.length - 1;
+        replacements[index] = simulate(group[index].text, direction, type, referenceText, language);
+      }
+      return group.map((range, index) => ({ ...range, replacement: replacements[index] }));
+    });
     after = content;
-    for (const { start, end, text, annotation } of targets.reverse()) {
-      // Each range carries its own user instructions. The rule-based demo uses
-      // those instructions for that range, falling back to the general request.
-      const direction = typeof annotation === 'string' && annotation.trim() ? annotation.trim() : prompt;
-      const replacement = simulate(text, direction, type, referenceText, language);
+    for (const { start, end, replacement } of edits.sort((a, b) => b.start - a.start)) {
       after = after.slice(0, start) + replacement + after.slice(end);
     }
   } else {

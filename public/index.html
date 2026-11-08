@@ -121,29 +121,30 @@
             <input class="local-file-input" type="file" accept=".md,.txt" multiple hidden>
             <details class="sample-files"><summary data-i18n="sampleFiles">演示目录中的文件</summary><div class="file-menu-heading"><span data-i18n="files">文件</span><button class="icon-button refresh-files" type="button" data-i18n-aria="refreshFiles" data-i18n-title="refreshFiles"><svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg></button></div><div class="file-list" data-i18n-aria="files"></div></details>
           </div>
+          <div class="focus-selection-tools" hidden><button type="button" class="secondary-button focus-add-selection" data-i18n="focusAddSelection">加入当前选取</button><button type="button" class="text-button focus-review-selection" data-i18n="focusReviewSelection">查看已选区块</button><span class="focus-selection-count" role="status"></span></div>
           <div class="editor-input-wrap" hidden><textarea class="editor-input" spellcheck="false" wrap="soft"></textarea></div><div class="markdown-preview" hidden></div>
+          <div class="focus-block-view" role="group" data-i18n-aria="focusBlocksInDocument" hidden></div>
         </div>
         <div class="pane-footer"><span class="pane-state"></span><span class="pane-stats"></span></div>
       </section>
     </template>
     <div id="focus-picker" class="focus-picker" role="dialog" aria-labelledby="focus-title" hidden>
       <div class="focus-picker-heading"><strong id="focus-title" data-i18n="addFocus">添加聚焦</strong><button id="focus-close" type="button" class="icon-button" data-i18n-aria="closeFocus"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button></div>
-      <ol class="focus-steps"><li id="focus-step-range"><span>1</span><span data-i18n="focusSelectRange">选择聚焦区域</span></li><li id="focus-step-note"><span>2</span><span data-i18n="focusWriteNote">填写说明</span></li></ol>
+      <ol class="focus-steps"><li id="focus-step-range"><span>1</span><span data-i18n="focusSelectRange">选择区块</span></li><li id="focus-step-note"><span>2</span><span data-i18n="focusWriteNote">填写说明</span></li></ol>
       <div id="focus-range-step">
         <div class="focus-controls">
           <label for="focus-source" data-i18n="focusSource">来源</label><select id="focus-source"></select>
-          <label for="focus-mode" data-i18n="focusMode">选择方式</label><select id="focus-mode"></select>
-          <label id="focus-block-label" for="focus-block" data-i18n="focusBlock">区块</label><select id="focus-block"></select>
+          <label for="focus-mode" data-i18n="focusMode">划分方式</label><select id="focus-mode"></select>
         </div>
         <p id="focus-mode-hint" class="focus-hint"></p>
-        <button id="focus-select-text" type="button" class="secondary-button" data-i18n="focusSelectInEditor" hidden>到编辑区选取</button>
+        <div class="focus-legend"><span><i></i><span data-i18n="focusUnselected">未选择</span></span><span><i class="selected"></i><span data-i18n="focusSelected">已选择</span></span></div>
         <div id="focus-pages" class="focus-pages" hidden><button id="focus-previous" type="button" class="text-button" data-i18n="previousPage">上一页</button><span id="focus-page"></span><button id="focus-next" type="button" class="text-button" data-i18n="nextPage">下一页</button></div>
       </div>
-      <div class="focus-preview-section"><p id="focus-range" class="focus-range"></p><pre id="focus-preview" class="focus-preview" tabindex="0" data-i18n-aria="focusRangePreview"></pre><p id="focus-preview-truncated" class="focus-hint" data-i18n="focusPreviewTruncated" hidden>预览仅显示开头，聚焦包含所选的完整范围。</p></div>
+      <p id="focus-range" class="focus-range" role="status"></p>
       <div id="focus-note-step" hidden>
         <label for="focus-annotation" class="field-label" data-i18n="focusAnnotation">聚焦／改动说明</label>
         <textarea id="focus-annotation" class="prompt-input focus-annotation" maxlength="2000" required aria-describedby="focus-note-help"></textarea>
-        <p id="focus-note-help" class="focus-hint" data-i18n="focusNoteHelp">说明这个范围的修改目标、限制或需保留的内容（最多 2000 字符）。</p>
+        <p id="focus-note-help" class="focus-hint" data-i18n="focusNoteHelp">为这组区块填写共同的修改目标、限制或需保留的内容（最多 2000 字符）。</p>
         <div class="focus-controls"><label for="focus-role" data-i18n="focusRole">用途</label><select id="focus-role"><option value="target" data-i18n="targetRole">修改目标</option><option value="reference" data-i18n="referenceRole">参考片段</option></select></div>
       </div>
       <p id="focus-error" class="context-warning" role="status" hidden></p>

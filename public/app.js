@@ -1,6 +1,7 @@
 import { blocksPage, plugins, pluginFor, supportsContext } from './plugins.js';
 import { readLocalFile, localFileBlob } from './local-files.js';
 import { suggest, SuggestionError } from './assistant.js';
+import { focusRanges, rangesOverlap, validFocus, focusText } from './focus.js';
 import { translate, serverMessage } from './i18n.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -15,7 +16,6 @@ const elements = {
   focusPicker: $('#focus-picker'),
   focusSource: $('#focus-source'),
   focusMode: $('#focus-mode'),
-  focusBlock: $('#focus-block'),
   focusRole: $('#focus-role'),
   focusAnnotation: $('#focus-annotation'),
   focusContinue: $('#focus-continue'),
@@ -55,6 +55,8 @@ const state = {
   nextFocusId: 1,
   focusTabId: null,
   focusBlocks: [],
+  focusSelected: [],
+  focusManualReview: false,
   focusPage: 0,
   focusHasNext: false,
   focusStep: 1,
@@ -135,7 +137,7 @@ function focusProblem(focus) {
     ? findTab(focus.sourceId)?.tab
     : state.references.find((item) => item.id === focus.sourceId);
   if (!source) return t('focusSourceMissing');
-  if (source.content !== focus.documentSnapshot) return t('focusStale');
+  if (!validFocus(focus, source.content)) return t('focusStale');
   if (focus.role === 'target' && focus.sourceKind !== 'tab') return t('focusWrongTarget');
   return '';
 }
@@ -447,6 +449,7 @@ function renderPane(pane) {
   paneState.classList.toggle('is-dirty', isDirty);
   paneState.textContent = !doc ? '' : t(!doc.editable ? 'readonly' : isDirty ? 'unsaved' : 'saved');
   $('.pane-stats', root).textContent = doc ? t('chars', { n: tab.content.length }) : '';
+  renderFocusCanvas(pane);
 }
 
 function renderAll() {
@@ -510,6 +513,12 @@ function makePane(pane) {
     });
   }
   $('.refresh-files', pane.element).addEventListener('click', refreshFiles);
+  $('.focus-add-selection', pane.element).addEventListener('click', addFocusSelection);
+  $('.focus-review-selection', pane.element).addEventListener('click', () => {
+    state.focusManualReview = !state.focusManualReview;
+    renderFocusPicker();
+    if (!state.focusManualReview) $('.editor-input', pane.element).focus({ preventScroll: true });
+  });
   const textarea = $('.editor-input', pane.element);
   function rememberPosition() {
     const tab = activeTab(pane);
@@ -957,15 +966,15 @@ function sourceValue(source) {
 }
 
 function blockKey(block) {
-  return block.kind + ':' + block.start + ':' + block.end;
+  return block.start + ':' + block.end;
 }
 
-function blockLabel(block, index) {
+function blockLabel(block) {
   if (block.kind === 'selection') return t('selectionBlock', { line: block.line });
   if (block.kind === 'heading') return t('headingBlock', { title: block.title || t('unnamedHeading'), line: block.line });
   const key = { preamble: 'preambleBlock', document: 'documentBlock', diagram: 'diagramBlock', table: 'tableBlock', code: 'codeBlock' }[block.kind];
   if (key) return t(key, { line: block.line });
-  return t('paragraphBlock', { n: state.focusPage * 200 + index + 1, line: block.line });
+  return t('paragraphBlock', { line: block.line });
 }
 
 function selectionBlock(source) {
@@ -977,32 +986,153 @@ function selectionBlock(source) {
 }
 
 function focusRangeLabel(focus) {
-  return t('focusRange', {
-    name: focus.sourceName, start: focus.line,
-    end: focus.documentSnapshot.slice(0, Math.max(focus.start, focus.end - 1)).split('\n').length,
-    count: focus.text.length,
-  });
+  const ranges = focusRanges(focus);
+  return t('focusGroupRange', { name: focus.sourceName, n: ranges.length, count: ranges.reduce((sum, range) => sum + range.text.length, 0) }) + '\n' +
+    ranges.map((range) => t('focusRange', { name: focus.sourceName, start: range.line,
+      end: focus.documentSnapshot.slice(0, Math.max(range.start, range.end - 1)).split('\n').length, count: range.text.length })).join('\n');
 }
 
-function focusDraftFor(source, block) {
+function focusDraftFor(source) {
   return {
     sourceKind: source.kind, sourceId: source.id, sourceName: source.name,
-    documentSnapshot: source.content, start: block.start, end: block.end,
-    text: source.content.slice(block.start, block.end), kind: block.kind, title: block.title || '',
-    line: block.line, mode: elements.focusMode.value, page: state.focusPage,
+    documentSnapshot: source.content,
+    ranges: state.focusSelected.map((range) => ({ ...range })).sort((a, b) => a.start - b.start),
+    mode: elements.focusMode.value, page: state.focusPage,
     role: source.kind === 'tab' && source.editable ? elements.focusRole.value : 'reference',
   };
 }
 
 function focusConflict(focus) {
+  const ranges = focusRanges(focus);
   const existing = state.focuses.filter((item) => item.id !== state.focusEditingId && item.sourceKind === focus.sourceKind && item.sourceId === focus.sourceId && item.documentSnapshot === focus.documentSnapshot);
-  if (existing.some((item) => item.role === focus.role && item.start === focus.start && item.end === focus.end)) return t('focusExists');
-  if (focus.role === 'target' && existing.some((item) => item.role === 'target' && item.start < focus.end && focus.start < item.end)) return t('focusOverlap');
+  if (existing.some((item) => item.role === focus.role && focusRanges(item).length === ranges.length &&
+    ranges.every((range) => focusRanges(item).some((other) => blockKey(range) === blockKey(other))))) return t('focusExists');
+  if (focus.role === 'target' && existing.some((item) => item.role === 'target' &&
+    focusRanges(item).some((other) => ranges.some((range) => rangesOverlap(range, other))))) return t('focusOverlap');
   return '';
 }
 
+function pickerSource() {
+  return focusSources().find((item) => sourceValue(item) === elements.focusSource.value);
+}
+
+function addFocusSelection() {
+  const source = pickerSource();
+  const block = selectionBlock(source);
+  if (!source || !block || state.focusStep !== 1) return;
+  if (state.focusSelected.some((range) => rangesOverlap(range, block))) return toast(t('focusSelectionOverlap'), true);
+  state.focusSelected.push({ ...block, text: source.content.slice(block.start, block.end) });
+  renderFocusPicker();
+}
+
+function toggleFocusBlock(block) {
+  if (state.focusStep !== 1) return;
+  const source = pickerSource();
+  if (!source || source.content !== state.focusPickerSnapshot) return renderFocusPicker();
+  const existing = state.focusSelected.find((range) => blockKey(range) === blockKey(block));
+  if (existing) state.focusSelected = state.focusSelected.filter((range) => range !== existing);
+  else {
+    if (state.focusSelected.some((range) => rangesOverlap(range, block))) return toast(t('focusSelectionOverlap'), true);
+    state.focusSelected.push({ ...block, text: source.content.slice(block.start, block.end) });
+  }
+  renderFocusPicker();
+}
+
+function renderFocusCanvas(pane) {
+  if (!pane.element) return;
+  const root = pane.element;
+  const view = $('.focus-block-view', root);
+  const tools = $('.focus-selection-tools', root);
+  const tab = activeTab(pane);
+  const active = !elements.focusPicker.hidden && tab?.id === state.focusTabId;
+  view.hidden = true;
+  tools.hidden = true;
+  root.classList.remove('selecting-text');
+  if (!active) return;
+  const secondStep = state.focusStep === 2;
+  const source = secondStep && state.focusDraft ? {
+    kind: state.focusDraft.sourceKind, name: state.focusDraft.sourceName, content: state.focusDraft.documentSnapshot,
+  } : pickerSource();
+  if (!source) return;
+  $('.empty-pane', root).hidden = true;
+  const manual = !secondStep && elements.focusMode.value === 'selection';
+  const selected = secondStep ? focusRanges(state.focusDraft) : state.focusSelected;
+  const showBlocks = !manual || state.focusManualReview;
+  tools.hidden = !manual;
+  root.classList.toggle('selecting-text', manual);
+  $('.editor-input-wrap', root).hidden = showBlocks;
+  $('.markdown-preview', root).hidden = true;
+  $('.mode-switch', root).hidden = true;
+  if (manual) {
+    const block = selectionBlock(pickerSource());
+    $('.focus-add-selection', root).disabled = !block || state.focusSelected.some((range) => rangesOverlap(range, block));
+    $('.focus-add-selection', root).hidden = state.focusManualReview;
+    $('.focus-review-selection', root).textContent = t(state.focusManualReview ? 'focusContinueSelection' : 'focusReviewSelection');
+    $('.focus-selection-count', root).textContent = t('focusSelectedCount', { n: selected.length });
+  }
+  if (!showBlocks) return;
+  view.hidden = false;
+  // Keep selected blocks across modes/pages; hide candidates that overlap them.
+  const candidates = manual ? [] : state.focusBlocks;
+  const blocks = [...selected, ...candidates.filter((block) => !selected.some((range) => rangesOverlap(range, block)))].sort((a, b) => a.start - b.start);
+  const key = blocks.map(blockKey).join('|') + ':' + state.language + ':' + source.kind + ':' + source.name;
+  if (pane.focusCanvasKey !== key || pane.focusCanvasSnapshot !== source.content) {
+    const focusedKey = view.contains(document.activeElement) ? document.activeElement.dataset.range : null;
+    const scrollTop = view.scrollTop;
+    view.replaceChildren();
+    if (source.kind === 'reference') {
+      const label = document.createElement('p');
+      label.className = 'focus-source-label';
+      label.textContent = t('focusSnapshotSource', { name: source.name });
+      view.append(label);
+    }
+    let offset = 0;
+    function gap(end) {
+      if (end <= offset) return;
+      const text = document.createElement('pre');
+      text.className = 'focus-gap';
+      text.textContent = source.content.slice(offset, end);
+      view.append(text);
+    }
+    for (const block of blocks) {
+      gap(block.start);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'focus-source-block';
+      button.dataset.range = blockKey(block);
+      button.title = blockLabel(block);
+      button.setAttribute('aria-label', button.title);
+      button.textContent = source.content.slice(block.start, block.end);
+      button.addEventListener('click', () => toggleFocusBlock(block));
+      view.append(button);
+      offset = block.end;
+    }
+    gap(source.content.length);
+    if (!blocks.length) {
+      const empty = document.createElement('p');
+      empty.className = 'focus-hint';
+      empty.textContent = t(manual ? 'focusNoSelection' : 'noBlocks');
+      view.prepend(empty);
+    }
+    pane.focusCanvasKey = key;
+    pane.focusCanvasSnapshot = source.content;
+    view.scrollTop = scrollTop;
+    if (focusedKey) [...view.querySelectorAll('[data-range]')].find((button) => button.dataset.range === focusedKey)?.focus({ preventScroll: true });
+  }
+  for (const button of view.querySelectorAll('[data-range]')) {
+    button.setAttribute('aria-pressed', String(selected.some((range) => blockKey(range) === button.dataset.range)));
+    button.setAttribute('aria-disabled', String(secondStep));
+  }
+  const location = state.focusPickerSource + ':' + elements.focusMode.value + ':' + state.focusPage + ':' + state.focusStep;
+  if (pane.focusCanvasLocation !== location) {
+    const first = secondStep ? selected[0] : candidates[0] || selected[0];
+    const button = first && [...view.querySelectorAll('[data-range]')].find((item) => item.dataset.range === blockKey(first));
+    view.scrollTop = button ? Math.max(0, button.offsetTop - 20) : 0;
+    pane.focusCanvasLocation = location;
+  }
+}
+
 let focusAnchor = null;
-let focusAnchorRect = null;
 function openFocusPicker(tab, button) {
   if (!supportsContext(tab.document?.type, 'focus')) return;
   if (!elements.focusPicker.hidden && state.focusTabId === tab.id && !state.focusEditingId) return closeFocusPicker(true);
@@ -1011,49 +1141,61 @@ function openFocusPicker(tab, button) {
   state.focusStep = 1;
   state.focusPage = 0;
   focusAnchor = button;
-  focusAnchorRect = button.getBoundingClientRect();
   elements.focusPicker.hidden = false;
   elements.focusSource.replaceChildren(new Option(tabName(tab), 'tab:' + tab.id));
-  const mode = selectionBlock({ kind: 'tab', id: tab.id }) ? 'selection' : pluginFor(tab.document.type).focusModes[0];
+  const selection = selectionBlock({ kind: 'tab', id: tab.id });
+  const mode = selection ? 'selection' : pluginFor(tab.document.type).focusModes[0];
   elements.focusMode.replaceChildren(new Option('', mode));
-  elements.focusBlock.replaceChildren();
   elements.focusAnnotation.value = '';
   elements.focusRole.value = tab.document.editable ? 'target' : 'reference';
   button.setAttribute('aria-expanded', 'true');
   renderFocusPicker();
-  elements.focusMode.focus();
+  if (selection) { addFocusSelection(); state.focusManualReview = true; renderFocusPicker(); }
+  elements.focusMode.focus({ preventScroll: true });
 }
 
 function editFocus(focus, button) {
-  closeFocusPicker();
-  state.focusTabId = focus.sourceKind === 'tab' ? focus.sourceId : activeTab(state.panes[state.active])?.id;
+  const found = focus.sourceKind === 'tab' ? findTab(focus.sourceId) : findTab(activeTab(state.panes[state.active])?.id);
+  if (!found) return toast(t('focusSourceMissing'), true);
+  showContextTab(found);
+  state.focusTabId = found.tab.id;
   state.focusStep = 2;
   state.focusEditingId = focus.id;
-  state.focusDraft = { ...focus };
+  state.focusDraft = { ...focus, ranges: focusRanges(focus).map((range) => ({ ...range })) };
+  state.focusSelected = state.focusDraft.ranges.map((range) => ({ ...range }));
   state.focusPage = focus.page || 0;
   focusAnchor = button;
-  focusAnchorRect = button.getBoundingClientRect();
   elements.focusPicker.hidden = false;
   elements.focusSource.replaceChildren(new Option(focus.sourceName, focus.sourceKind + ':' + focus.sourceId));
-  const mode = focus.mode || ({ heading: 'section', preamble: 'section', document: 'section' }[focus.kind] || focus.kind);
-  elements.focusMode.replaceChildren(new Option('', mode));
-  elements.focusBlock.replaceChildren(new Option(blockLabel(focus, 0), blockKey(focus)));
+  elements.focusMode.replaceChildren(new Option('', focus.mode));
   state.focusPickerSource = focus.sourceKind + ':' + focus.sourceId;
   state.focusPickerSnapshot = focus.documentSnapshot;
-  state.focusPickerMode = mode;
+  state.focusPickerMode = focus.mode;
+  state.focusBlocks = [...state.focusSelected];
   elements.focusRole.value = focus.role;
   elements.focusAnnotation.value = focus.annotation || '';
   renderFocusPicker();
-  elements.focusAnnotation.focus();
+  elements.focusAnnotation.focus({ preventScroll: true });
 }
 
 function positionFocusPicker() {
-  if (elements.focusPicker.hidden || !focusAnchor) return;
-  const anchor = focusAnchor.isConnected ? focusAnchor.getBoundingClientRect() : focusAnchorRect;
-  const box = elements.focusPicker.getBoundingClientRect();
-  const bottom = window.innerHeight - box.height - 8;
-  elements.focusPicker.style.left = Math.max(8, Math.min(anchor.left, window.innerWidth - box.width - 8)) + 'px';
-  elements.focusPicker.style.top = Math.max(8, window.innerWidth <= 700 && elements.focusPicker.classList.contains('is-selecting') ? bottom : Math.min(anchor.bottom + 7, bottom)) + 'px';
+  if (elements.focusPicker.hidden) return;
+  const pane = findTab(state.focusTabId)?.pane;
+  const inline = window.innerWidth <= 900;
+  elements.focusPicker.classList.toggle('focus-inline', inline);
+  if (inline && pane) {
+    if (elements.focusPicker.parentElement !== pane.element) pane.element.insertBefore(elements.focusPicker, $('.pane-footer', pane.element));
+    elements.focusPicker.style.left = '';
+    elements.focusPicker.style.top = '';
+    elements.focusPicker.style.width = '';
+  } else {
+    if (elements.focusPicker.parentElement !== document.body) document.body.append(elements.focusPicker);
+    const assistant = $('.assistant-panel').getBoundingClientRect();
+    elements.focusPicker.style.width = Math.max(244, assistant.width - 16) + 'px';
+    const box = elements.focusPicker.getBoundingClientRect();
+    elements.focusPicker.style.left = Math.max(8, Math.min(assistant.left + 8, window.innerWidth - box.width - 8)) + 'px';
+    elements.focusPicker.style.top = Math.max(8, Math.min(assistant.top + 16, window.innerHeight - box.height - 8)) + 'px';
+  }
 }
 
 function closeFocusPicker(restoreFocus = false) {
@@ -1062,22 +1204,18 @@ function closeFocusPicker(restoreFocus = false) {
   const returnTarget = focusAnchor?.isConnected ? focusAnchor : state.focusEditingId
     ? elements.focusList.querySelector('[data-card-id="' + state.focusEditingId + '"] .context-edit') : null;
   focusAnchor = null;
-  focusAnchorRect = null;
   state.focusTabId = null;
   state.focusDraft = null;
   state.focusEditingId = null;
   state.focusStep = 1;
+  state.focusSelected = [];
+  state.focusBlocks = [];
+  state.focusManualReview = false;
   state.focusPickerSource = '';
   state.focusPickerSnapshot = null;
   state.focusPickerMode = '';
-  if (restoreFocus) returnTarget?.focus();
-}
-
-function renderFocusPreview(focus) {
-  $('#focus-range').textContent = focus ? focusRangeLabel(focus) : t(elements.focusMode.value === 'selection' ? 'focusNoSelection' : 'noBlocks');
-  $('#focus-preview').textContent = focus?.text.slice(0, 6000) || '';
-  $('#focus-preview').hidden = !focus;
-  $('#focus-preview-truncated').hidden = !focus || focus.text.length <= 6000;
+  for (const pane of state.panes) if (pane.element) { pane.focusCanvasLocation = ''; renderPane(pane); }
+  if (restoreFocus) returnTarget?.focus({ preventScroll: true });
 }
 
 function renderFocusPicker() {
@@ -1111,106 +1249,63 @@ function renderFocusPicker() {
     error.textContent = problem;
     error.hidden = !problem;
     elements.setFocus.disabled = Boolean(problem) || !annotation;
-    renderFocusPreview(draft);
-    elements.focusPicker.classList.remove('is-selecting');
-    positionFocusPicker();
-    return;
+    $('#focus-range').textContent = t('focusGroupRange', { name: draft.sourceName, n: draft.ranges.length, count: draft.ranges.reduce((sum, range) => sum + range.text.length, 0) });
+    $('#focus-range').title = focusRangeLabel(draft);
+  } else {
+    const previousSource = elements.focusSource.value;
+    const previousMode = elements.focusMode.value;
+    elements.focusSource.replaceChildren(...sources.map((source) => new Option(t(source.kind === 'tab' ? 'currentFile' : 'referenceFile', { name: source.name }), sourceValue(source))));
+    if (sources.some((source) => sourceValue(source) === previousSource)) elements.focusSource.value = previousSource;
+    const source = pickerSource();
+    const modes = (pluginFor(source?.type)?.focusModes || []).filter((mode) => mode !== 'selection' || source.kind === 'tab');
+    const modeKeys = { section: 'focusModeSection', paragraph: 'focusModeParagraph', diagram: 'focusModeDiagram', table: 'focusModeTable', code: 'focusModeCode', selection: 'focusModeSelection' };
+    elements.focusMode.replaceChildren(...modes.map((mode) => new Option(t(modeKeys[mode]), mode)));
+    if (modes.includes(previousMode)) elements.focusMode.value = previousMode;
+    const mode = elements.focusMode.value;
+    const sourceChanged = state.focusPickerSource !== (source ? sourceValue(source) : '') || state.focusPickerSnapshot !== source?.content;
+    if (sourceChanged) { state.focusSelected = []; state.focusManualReview = false; }
+    if (sourceChanged || state.focusPickerMode !== mode) state.focusPage = 0;
+    if (mode === 'selection' && source?.kind === 'tab') findTab(source.id).tab.mode = 'edit';
+    const page = source && mode !== 'selection' ? blocksPage(source.type, source.content, state.focusPage, 200, mode) : { blocks: [], hasNext: false };
+    state.focusBlocks = page.blocks;
+    state.focusHasNext = page.hasNext;
+    state.focusPickerSource = source ? sourceValue(source) : '';
+    state.focusPickerSnapshot = source?.content;
+    state.focusPickerMode = mode;
+    elements.focusSource.disabled = !sources.length;
+    elements.focusMode.disabled = !modes.length;
+    elements.focusContinue.disabled = !source || !state.focusSelected.length;
+    $('#focus-mode-hint').textContent = t(mode === 'selection' ? 'focusSelectionHint' : mode === 'section' ? 'focusSectionHint' : 'focusBlockHint');
+    $('.focus-legend').hidden = mode === 'selection' && !state.focusManualReview;
+    $('#focus-pages').hidden = mode === 'selection' || (state.focusPage === 0 && !page.hasNext);
+    $('#focus-page').textContent = t('pageNumber', { n: state.focusPage + 1 });
+    $('#focus-previous').disabled = state.focusPage === 0;
+    $('#focus-next').disabled = !page.hasNext;
+    $('#focus-range').textContent = t('focusSelectedCount', { n: state.focusSelected.length });
+    $('#focus-range').title = source && state.focusSelected.length ? focusRangeLabel(focusDraftFor(source)) : '';
   }
-
-  const previousSource = elements.focusSource.value;
-  const previousMode = elements.focusMode.value;
-  const previousBlock = elements.focusBlock.value;
-  elements.focusSource.replaceChildren();
-  for (const source of sources) elements.focusSource.add(new Option(t(source.kind === 'tab' ? 'currentFile' : 'referenceFile', { name: source.name }), sourceValue(source)));
-  if (sources.some((source) => sourceValue(source) === previousSource)) elements.focusSource.value = previousSource;
-  const source = sources.find((item) => sourceValue(item) === elements.focusSource.value);
-  const modes = (pluginFor(source?.type)?.focusModes || []).filter((mode) => mode !== 'selection' || source.kind === 'tab');
-  const modeKeys = { section: 'focusModeSection', paragraph: 'focusModeParagraph', diagram: 'focusModeDiagram', table: 'focusModeTable', code: 'focusModeCode', selection: 'focusModeSelection' };
-  elements.focusMode.replaceChildren(...modes.map((mode) => new Option(t(modeKeys[mode]), mode)));
-  if (modes.includes(previousMode)) elements.focusMode.value = previousMode;
-  const mode = elements.focusMode.value;
-  const changed = state.focusPickerSource !== (source ? sourceValue(source) : '') || state.focusPickerSnapshot !== source?.content || state.focusPickerMode !== mode;
-  if (changed) state.focusPage = 0;
-  let page = { blocks: [], hasNext: false };
-  if (source && mode === 'selection') {
-    const block = selectionBlock(source);
-    if (block) page.blocks.push(block);
-  } else if (source) {
-    page = blocksPage(source.type, source.content, state.focusPage, 200, mode);
-    if (state.focusPage && !page.blocks.length) {
-      state.focusPage = 0;
-      page = blocksPage(source.type, source.content, 0, 200, mode);
-    }
-  }
-  state.focusBlocks = page.blocks;
-  state.focusHasNext = page.hasNext;
-  state.focusPickerSource = source ? sourceValue(source) : '';
-  state.focusPickerSnapshot = source?.content;
-  state.focusPickerMode = mode;
-  elements.focusBlock.replaceChildren();
-  if (!state.focusBlocks.length) elements.focusBlock.add(new Option(t('noBlocks'), ''));
-  for (const [index, block] of state.focusBlocks.entries()) elements.focusBlock.add(new Option(blockLabel(block, index), blockKey(block)));
-  if (!changed && [...elements.focusBlock.options].some((option) => option.value === previousBlock)) elements.focusBlock.value = previousBlock;
-  const block = state.focusBlocks.find((item) => blockKey(item) === elements.focusBlock.value);
-  elements.focusSource.disabled = !sources.length;
-  elements.focusMode.disabled = !modes.length;
-  elements.focusBlock.disabled = !block;
-  elements.focusBlock.hidden = mode === 'selection';
-  $('#focus-block-label').hidden = mode === 'selection';
-  elements.focusContinue.disabled = !source || !block;
-  $('#focus-mode-hint').textContent = t(mode === 'selection' ? 'focusSelectionHint' : mode === 'section' ? 'focusSectionHint' : 'focusBlockHint');
-  $('#focus-select-text').hidden = mode !== 'selection';
-  $('#focus-pages').hidden = mode === 'selection' || (state.focusPage === 0 && !page.hasNext);
-  $('#focus-page').textContent = t('pageNumber', { n: state.focusPage + 1 });
-  $('#focus-previous').disabled = state.focusPage === 0;
-  $('#focus-next').disabled = !page.hasNext;
-  renderFocusPreview(source && block ? focusDraftFor(source, block) : null);
-  elements.focusPicker.classList.toggle('is-selecting', mode === 'selection');
+  for (const pane of state.panes) renderFocusCanvas(pane);
   positionFocusPicker();
 }
 
 function continueFocus() {
-  const source = focusSources().find((item) => sourceValue(item) === elements.focusSource.value);
+  const source = pickerSource();
   if (!source || state.focusPickerSource !== sourceValue(source) || state.focusPickerSnapshot !== source.content) {
     renderFocusPicker();
     return toast(t('focusStale'), true);
   }
-  const block = elements.focusMode.value === 'selection' ? selectionBlock(source) : state.focusBlocks.find((item) => blockKey(item) === elements.focusBlock.value);
-  if (!block) return toast(t(elements.focusMode.value === 'selection' ? 'focusNoSelection' : 'chooseBlock'), true);
-  state.focusDraft = focusDraftFor(source, block);
+  if (!state.focusSelected.length) return toast(t('chooseBlock'), true);
+  state.focusDraft = focusDraftFor(source);
   state.focusStep = 2;
   renderFocusPicker();
-  elements.focusAnnotation.focus();
+  elements.focusAnnotation.focus({ preventScroll: true });
 }
 
 function returnToFocusRange() {
-  const draft = state.focusDraft;
-  if (draft?.kind === 'selection' && draft.sourceKind === 'tab') {
-    const found = findTab(draft.sourceId);
-    if (found?.tab.content === draft.documentSnapshot) {
-      found.tab.selectionStart = draft.start;
-      found.tab.selectionEnd = draft.end;
-      if (activeTab(found.pane)?.id === found.tab.id) $('.editor-input', found.pane.element).setSelectionRange(draft.start, draft.end);
-    }
-  }
   state.focusStep = 1;
+  state.focusManualReview = elements.focusMode.value === 'selection';
   renderFocusPicker();
-  elements.focusMode.focus();
-}
-
-function selectFocusText() {
-  const source = focusSources().find((item) => sourceValue(item) === elements.focusSource.value);
-  const found = source?.kind === 'tab' ? findTab(source.id) : null;
-  if (!found) return;
-  state.active = found.pane.index;
-  found.pane.activeTabId = found.tab.id;
-  found.tab.mode = 'edit';
-  renderAll();
-  const textarea = $('.editor-input', found.pane.element);
-  textarea.focus({ preventScroll: true });
-  textarea.setSelectionRange(found.tab.selectionStart || 0, found.tab.selectionEnd || 0);
-  found.pane.element.scrollIntoView({ block: 'start', inline: 'nearest' });
-  renderFocusPicker();
+  elements.focusMode.focus({ preventScroll: true });
 }
 
 async function openFocusedSource(focus) {
@@ -1226,15 +1321,11 @@ async function openFocusedSource(focus) {
   }
   if (!found) return;
   if (found.tab.content !== focus.documentSnapshot) return toast(t('focusSnapshotNotice'), true);
-  found.tab.mode = 'edit';
-  found.tab.selectionStart = focus.start;
-  found.tab.selectionEnd = focus.end;
-  renderPane(found.pane);
-  const textarea = $('.editor-input', found.pane.element);
-  textarea.focus({ preventScroll: true });
-  textarea.setSelectionRange(focus.start, focus.end);
-  const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight);
-  textarea.scrollTop = Math.max(0, (focus.line - 1) * lineHeight - textarea.clientHeight / 3);
+  // A textarea cannot represent disjoint highlights. Show all exact ranges in
+  // the content view and the group's shared instructions instead.
+  editFocus(focus, elements.focusList.querySelector('[data-card-id="' + focus.id + '"] .context-edit'));
+  const view = $('.focus-block-view', found.pane.element);
+  view.querySelector('[aria-pressed="true"]')?.scrollIntoView({ block: 'nearest' });
 }
 
 function renderContext() {
@@ -1315,7 +1406,7 @@ function generateSuggestion() {
   if (!prompt && !focuses.some((focus) => focus.role === 'target' && focus.annotation?.trim())) { elements.prompt.focus(); return toast(t('enterRequest'), true); }
   const problem = contextProblem(tab);
   if (problem) return toast(problem, true);
-  const referenceBlocks = focuses.filter((focus) => focus.role === 'reference').map((focus) => focus.text);
+  const referenceBlocks = focuses.filter((focus) => focus.role === 'reference').map(focusText);
   const references = referenceBlocks.length ? referenceBlocks : state.references.map((reference) => reference.content);
   if (!references.length) {
     for (const id of state.attentions) {
@@ -1427,10 +1518,11 @@ elements.divider.addEventListener('keydown', (event) => {
 });
 window.addEventListener('resize', updateDividerOrientation);
 document.addEventListener('click', (event) => {
-  if (elements.focusPicker.hidden || elements.focusPicker.contains(event.target) || focusAnchor?.contains(event.target)) return;
+  const path = event.composedPath();
+  if (elements.focusPicker.hidden || path.includes(elements.focusPicker) || path.includes(focusAnchor)) return;
   const sourcePane = findTab(state.focusTabId)?.pane.element;
-  if (!sourcePane?.contains(event.target)) closeFocusPicker();
-});
+  if (!path.includes(sourcePane)) closeFocusPicker();
+}, true);
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') closeFocusPicker(true);
 });
@@ -1448,12 +1540,10 @@ for (const input of document.querySelectorAll('input[name="theme"]')) {
 }
 elements.focusSource.addEventListener('change', renderFocusPicker);
 elements.focusMode.addEventListener('change', renderFocusPicker);
-elements.focusBlock.addEventListener('change', renderFocusPicker);
 elements.focusRole.addEventListener('change', renderFocusPicker);
 elements.focusAnnotation.addEventListener('input', renderFocusPicker);
 elements.focusContinue.addEventListener('click', continueFocus);
 $('#focus-back').addEventListener('click', returnToFocusRange);
-$('#focus-select-text').addEventListener('click', selectFocusText);
 for (const id of ['#focus-close', '#focus-cancel']) $(id).addEventListener('click', () => closeFocusPicker(true));
 $('#focus-previous').addEventListener('click', () => { if (state.focusPage > 0) { state.focusPage -= 1; renderFocusPicker(); } });
 $('#focus-next').addEventListener('click', () => { if (state.focusHasNext) { state.focusPage += 1; renderFocusPicker(); } });
