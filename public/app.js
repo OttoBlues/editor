@@ -382,6 +382,15 @@ function renderTabs(pane) {
   }
 }
 
+function renderFocusToggle(button, tab) {
+  const supported = supportsContext(tab?.document?.type, 'focus');
+  const expanded = !elements.focusPicker.hidden && state.focusTabId === tab?.id;
+  button.disabled = !supported;
+  button.setAttribute('aria-label', t(expanded ? 'closeFocus' : 'addFocus'));
+  button.title = t(!supported ? 'contextUnsupported' : expanded ? 'closeFocus' : 'addFocus');
+  button.setAttribute('aria-expanded', String(expanded));
+}
+
 function renderPane(pane) {
   const root = pane.element;
   const tab = activeTab(pane);
@@ -405,10 +414,7 @@ function renderPane(pane) {
     const capability = button.dataset.context;
     const supported = supportsContext(doc?.type, capability);
     if (capability === 'focus') {
-      button.disabled = !supported;
-      button.setAttribute('aria-label', t('addFocus'));
-      button.title = t(supported ? 'addFocus' : 'contextUnsupported');
-      button.setAttribute('aria-expanded', String(!elements.focusPicker.hidden && focusAnchor === button));
+      renderFocusToggle(button, tab);
       continue;
     }
     const added = capability === 'reference' ? state.references.some((item) => item.sourceTabId === tab?.id) : state.attentions.includes(tab?.id);
@@ -1102,7 +1108,19 @@ function renderFocusCanvas(pane) {
       button.dataset.range = blockKey(block);
       button.title = blockLabel(block);
       button.setAttribute('aria-label', button.title);
-      button.textContent = source.content.slice(block.start, block.end);
+      const marker = document.createElement('span');
+      marker.className = 'focus-block-marker';
+      marker.setAttribute('aria-hidden', 'true');
+      const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      icon.classList.add('icon');
+      const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+      use.setAttribute('href', '#i-check');
+      icon.append(use);
+      marker.append(icon);
+      const text = document.createElement('span');
+      text.className = 'focus-block-text';
+      text.textContent = source.content.slice(block.start, block.end);
+      button.append(marker, text);
       button.addEventListener('click', () => toggleFocusBlock(block));
       view.append(button);
       offset = block.end;
@@ -1135,7 +1153,7 @@ function renderFocusCanvas(pane) {
 let focusAnchor = null;
 function openFocusPicker(tab, button) {
   if (!supportsContext(tab.document?.type, 'focus')) return;
-  if (!elements.focusPicker.hidden && state.focusTabId === tab.id && !state.focusEditingId) return closeFocusPicker(true);
+  if (!elements.focusPicker.hidden && state.focusTabId === tab.id) return closeFocusPicker(true);
   closeFocusPicker();
   state.focusTabId = tab.id;
   state.focusStep = 1;
@@ -1178,23 +1196,17 @@ function editFocus(focus, button) {
   elements.focusAnnotation.focus({ preventScroll: true });
 }
 
-function positionFocusPicker() {
+function dockFocusPicker() {
   if (elements.focusPicker.hidden) return;
   const pane = findTab(state.focusTabId)?.pane;
-  const inline = window.innerWidth <= 900;
-  elements.focusPicker.classList.toggle('focus-inline', inline);
-  if (inline && pane) {
-    if (elements.focusPicker.parentElement !== pane.element) pane.element.insertBefore(elements.focusPicker, $('.pane-footer', pane.element));
-    elements.focusPicker.style.left = '';
-    elements.focusPicker.style.top = '';
-    elements.focusPicker.style.width = '';
-  } else {
-    if (elements.focusPicker.parentElement !== document.body) document.body.append(elements.focusPicker);
-    const assistant = $('.assistant-panel').getBoundingClientRect();
-    elements.focusPicker.style.width = Math.max(244, assistant.width - 16) + 'px';
-    const box = elements.focusPicker.getBoundingClientRect();
-    elements.focusPicker.style.left = Math.max(8, Math.min(assistant.left + 8, window.innerWidth - box.width - 8)) + 'px';
-    elements.focusPicker.style.top = Math.max(8, Math.min(assistant.top + 16, window.innerHeight - box.height - 8)) + 'px';
+  if (!pane) return;
+  const content = $('.pane-content', pane.element);
+  if (elements.focusPicker.parentElement !== content) content.prepend(elements.focusPicker);
+  for (const item of state.panes) {
+    item.element.classList.toggle('has-focus', item === pane);
+    // Use the actual pane width: a split editor can be narrow on a wide screen.
+    item.element.classList.toggle('focus-compact', item === pane && item.element.clientWidth < 620);
+    renderFocusToggle($('[data-context="focus"]', item.element), activeTab(item));
   }
 }
 
@@ -1214,7 +1226,11 @@ function closeFocusPicker(restoreFocus = false) {
   state.focusPickerSource = '';
   state.focusPickerSnapshot = null;
   state.focusPickerMode = '';
-  for (const pane of state.panes) if (pane.element) { pane.focusCanvasLocation = ''; renderPane(pane); }
+  for (const pane of state.panes) if (pane.element) {
+    pane.focusCanvasLocation = '';
+    pane.element.classList.remove('has-focus', 'focus-compact');
+    renderPane(pane);
+  }
   if (restoreFocus) returnTarget?.focus({ preventScroll: true });
 }
 
@@ -1284,8 +1300,8 @@ function renderFocusPicker() {
     $('#focus-range').textContent = t('focusSelectedCount', { n: state.focusSelected.length });
     $('#focus-range').title = source && state.focusSelected.length ? focusRangeLabel(focusDraftFor(source)) : '';
   }
+  dockFocusPicker();
   for (const pane of state.panes) renderFocusCanvas(pane);
-  positionFocusPicker();
 }
 
 function continueFocus() {
@@ -1517,18 +1533,12 @@ elements.divider.addEventListener('keydown', (event) => {
   setSplitRatio(event.key === 'Home' ? 0 : event.key === 'End' ? 1 : state.splitRatio + (event.key === positive ? 0.02 : -0.02));
 });
 window.addEventListener('resize', updateDividerOrientation);
-document.addEventListener('click', (event) => {
-  const path = event.composedPath();
-  if (elements.focusPicker.hidden || path.includes(elements.focusPicker) || path.includes(focusAnchor)) return;
-  const sourcePane = findTab(state.focusTabId)?.pane.element;
-  if (!path.includes(sourcePane)) closeFocusPicker();
-}, true);
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') closeFocusPicker(true);
 });
-window.addEventListener('resize', positionFocusPicker);
-window.addEventListener('scroll', positionFocusPicker, true);
-new ResizeObserver(positionFocusPicker).observe(elements.focusPicker);
+window.addEventListener('resize', dockFocusPicker);
+const focusLayoutObserver = new ResizeObserver(dockFocusPicker);
+for (const pane of state.panes) focusLayoutObserver.observe(pane.element);
 // Prevent a drop outside the editor from navigating away from unsaved work.
 for (const type of ['dragover', 'drop']) document.addEventListener(type, (event) => {
   if ([...event.dataTransfer.types].includes('Files')) event.preventDefault();

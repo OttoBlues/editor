@@ -110,46 +110,50 @@
           <div class="context-actions" role="group" data-i18n-aria="contextActions">
             <button type="button" class="icon-button context-action" data-context="reference" data-i18n-aria="addReference" data-i18n-title="addReference"><svg class="icon" aria-hidden="true"><use href="#i-reference"></use></svg></button>
             <button type="button" class="icon-button context-action" data-context="attention" data-i18n-aria="addAttention" data-i18n-title="addAttention"><svg class="icon" aria-hidden="true"><use href="#i-attention"></use></svg></button>
-            <button type="button" class="icon-button context-action" data-context="focus" data-i18n-aria="addFocus" data-i18n-title="addFocus" aria-haspopup="dialog" aria-controls="focus-picker" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-focus"></use></svg></button>
+            <button type="button" class="icon-button context-action" data-context="focus" data-i18n-aria="addFocus" data-i18n-title="addFocus" aria-controls="focus-picker" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-focus"></use></svg></button>
           </div>
           <span class="file-meta"></span><button type="button" class="save-button" data-i18n="save">保存</button>
         </div>
         <div class="pane-warning" hidden></div>
-        <div class="pane-body" role="tabpanel">
-          <div class="empty-pane">
-            <button class="drop-open" type="button"><svg class="icon" aria-hidden="true"><use href="#i-file"></use></svg><span data-i18n="emptyPane">将文件拖入此区域进行编辑</span><small data-i18n="chooseLocalFile">或点击选择 .md / .txt 文件</small></button>
-            <input class="local-file-input" type="file" accept=".md,.txt" multiple hidden>
-            <details class="sample-files"><summary data-i18n="sampleFiles">演示目录中的文件</summary><div class="file-menu-heading"><span data-i18n="files">文件</span><button class="icon-button refresh-files" type="button" data-i18n-aria="refreshFiles" data-i18n-title="refreshFiles"><svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg></button></div><div class="file-list" data-i18n-aria="files"></div></details>
+        <div class="pane-content">
+          <div class="pane-body" role="tabpanel">
+            <div class="empty-pane">
+              <button class="drop-open" type="button"><svg class="icon" aria-hidden="true"><use href="#i-file"></use></svg><span data-i18n="emptyPane">将文件拖入此区域进行编辑</span><small data-i18n="chooseLocalFile">或点击选择 .md / .txt 文件</small></button>
+              <input class="local-file-input" type="file" accept=".md,.txt" multiple hidden>
+              <details class="sample-files"><summary data-i18n="sampleFiles">演示目录中的文件</summary><div class="file-menu-heading"><span data-i18n="files">文件</span><button class="icon-button refresh-files" type="button" data-i18n-aria="refreshFiles" data-i18n-title="refreshFiles"><svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg></button></div><div class="file-list" data-i18n-aria="files"></div></details>
+            </div>
+            <div class="focus-selection-tools" hidden><button type="button" class="secondary-button focus-add-selection" data-i18n="focusAddSelection">加入当前选取</button><button type="button" class="text-button focus-review-selection" data-i18n="focusReviewSelection">查看已选区块</button><span class="focus-selection-count" role="status"></span></div>
+            <div class="editor-input-wrap" hidden><textarea class="editor-input" spellcheck="false" wrap="soft"></textarea></div><div class="markdown-preview" hidden></div>
+            <div class="focus-block-view" role="group" data-i18n-aria="focusBlocksInDocument" hidden></div>
           </div>
-          <div class="focus-selection-tools" hidden><button type="button" class="secondary-button focus-add-selection" data-i18n="focusAddSelection">加入当前选取</button><button type="button" class="text-button focus-review-selection" data-i18n="focusReviewSelection">查看已选区块</button><span class="focus-selection-count" role="status"></span></div>
-          <div class="editor-input-wrap" hidden><textarea class="editor-input" spellcheck="false" wrap="soft"></textarea></div><div class="markdown-preview" hidden></div>
-          <div class="focus-block-view" role="group" data-i18n-aria="focusBlocksInDocument" hidden></div>
         </div>
         <div class="pane-footer"><span class="pane-state"></span><span class="pane-stats"></span></div>
       </section>
     </template>
-    <div id="focus-picker" class="focus-picker" role="dialog" aria-labelledby="focus-title" hidden>
-      <div class="focus-picker-heading"><strong id="focus-title" data-i18n="addFocus">添加聚焦</strong><button id="focus-close" type="button" class="icon-button" data-i18n-aria="closeFocus"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button></div>
-      <ol class="focus-steps"><li id="focus-step-range"><span>1</span><span data-i18n="focusSelectRange">选择区块</span></li><li id="focus-step-note"><span>2</span><span data-i18n="focusWriteNote">填写说明</span></li></ol>
-      <div id="focus-range-step">
-        <div class="focus-controls">
-          <label for="focus-source" data-i18n="focusSource">来源</label><select id="focus-source"></select>
-          <label for="focus-mode" data-i18n="focusMode">划分方式</label><select id="focus-mode"></select>
+    <aside id="focus-picker" class="focus-picker" aria-labelledby="focus-title" hidden>
+      <div class="focus-picker-heading"><svg class="icon" aria-hidden="true"><use href="#i-focus"></use></svg><strong id="focus-title" data-i18n="addFocus">添加聚焦</strong><button id="focus-close" type="button" class="icon-button" data-i18n-aria="closeFocus"><svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg></button></div>
+      <div class="focus-picker-body">
+        <ol class="focus-steps"><li id="focus-step-range"><span>1</span><span data-i18n="focusSelectRange">选择区块</span></li><li id="focus-step-note"><span>2</span><span data-i18n="focusWriteNote">填写说明</span></li></ol>
+        <div id="focus-range-step">
+          <div class="focus-controls">
+            <label for="focus-source" data-i18n="focusSource">来源</label><select id="focus-source"></select>
+            <label for="focus-mode" data-i18n="focusMode">划分方式</label><select id="focus-mode"></select>
+          </div>
+          <p id="focus-mode-hint" class="focus-hint"></p>
+          <div class="focus-legend"><span><i aria-hidden="true"></i><span data-i18n="focusUnselected">未选择</span></span><span><i class="selected" aria-hidden="true"><svg class="icon"><use href="#i-check"></use></svg></i><span data-i18n="focusSelected">已选择</span></span></div>
+          <div id="focus-pages" class="focus-pages" hidden><button id="focus-previous" type="button" class="text-button" data-i18n="previousPage">上一页</button><span id="focus-page"></span><button id="focus-next" type="button" class="text-button" data-i18n="nextPage">下一页</button></div>
         </div>
-        <p id="focus-mode-hint" class="focus-hint"></p>
-        <div class="focus-legend"><span><i></i><span data-i18n="focusUnselected">未选择</span></span><span><i class="selected"></i><span data-i18n="focusSelected">已选择</span></span></div>
-        <div id="focus-pages" class="focus-pages" hidden><button id="focus-previous" type="button" class="text-button" data-i18n="previousPage">上一页</button><span id="focus-page"></span><button id="focus-next" type="button" class="text-button" data-i18n="nextPage">下一页</button></div>
+        <p id="focus-range" class="focus-range" role="status"></p>
+        <div id="focus-note-step" hidden>
+          <label for="focus-annotation" class="field-label" data-i18n="focusAnnotation">聚焦／改动说明</label>
+          <textarea id="focus-annotation" class="prompt-input focus-annotation" maxlength="2000" required aria-describedby="focus-note-help"></textarea>
+          <p id="focus-note-help" class="focus-hint" data-i18n="focusNoteHelp">为这组区块填写共同的修改目标、限制或需保留的内容（最多 2000 字符）。</p>
+          <div class="focus-controls"><label for="focus-role" data-i18n="focusRole">用途</label><select id="focus-role"><option value="target" data-i18n="targetRole">修改目标</option><option value="reference" data-i18n="referenceRole">参考片段</option></select></div>
+        </div>
+        <p id="focus-error" class="context-warning" role="status" hidden></p>
       </div>
-      <p id="focus-range" class="focus-range" role="status"></p>
-      <div id="focus-note-step" hidden>
-        <label for="focus-annotation" class="field-label" data-i18n="focusAnnotation">聚焦／改动说明</label>
-        <textarea id="focus-annotation" class="prompt-input focus-annotation" maxlength="2000" required aria-describedby="focus-note-help"></textarea>
-        <p id="focus-note-help" class="focus-hint" data-i18n="focusNoteHelp">为这组区块填写共同的修改目标、限制或需保留的内容（最多 2000 字符）。</p>
-        <div class="focus-controls"><label for="focus-role" data-i18n="focusRole">用途</label><select id="focus-role"><option value="target" data-i18n="targetRole">修改目标</option><option value="reference" data-i18n="referenceRole">参考片段</option></select></div>
-      </div>
-      <p id="focus-error" class="context-warning" role="status" hidden></p>
       <div class="focus-picker-footer"><button id="focus-cancel" type="button" class="text-button" data-i18n="cancel">取消</button><button id="focus-back" type="button" class="secondary-button" data-i18n="previousStep" hidden>上一步</button><button id="focus-continue" type="button" class="primary-button" data-i18n="nextStep">下一步</button><button id="set-focus" type="button" class="primary-button" data-i18n="createFocus" hidden>创建聚焦</button></div>
-    </div>
+    </aside>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   </body>
 </html>
