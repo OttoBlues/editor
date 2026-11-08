@@ -44,7 +44,7 @@ const state = {
   dragging: null,
   view: 'workspace',
   language: ['zh-CN', 'en'].includes(preferences.language) ? preferences.language : 'zh-CN',
-  accent: ['purple', 'blue', 'green'].includes(preferences.accent) ? preferences.accent : 'purple',
+  theme: preferences.theme === 'dark' ? 'dark' : 'light',
   references: [],
   nextReferenceId: 1,
   attentions: [],
@@ -77,11 +77,10 @@ function applyTranslations(root = document) {
   for (const element of root.querySelectorAll('[data-i18n-aria]')) element.setAttribute('aria-label', t(element.dataset.i18nAria));
   for (const element of root.querySelectorAll('[data-i18n-title]')) element.title = t(element.dataset.i18nTitle);
   document.documentElement.lang = state.language;
-  document.documentElement.dataset.accent = state.accent;
 }
 
 function savePreferences() {
-  try { localStorage.setItem('editor-preferences', JSON.stringify({ language: state.language, accent: state.accent })); } catch { /* Settings remain active for this session. */ }
+  try { localStorage.setItem('editor-preferences', JSON.stringify({ language: state.language, theme: state.theme })); } catch { /* Settings remain active for this session. */ }
 }
 
 class ApiError extends Error {}
@@ -1170,12 +1169,13 @@ function setView(view) {
 }
 
 function updatePreferences() {
+  document.documentElement.dataset.theme = state.theme;
   savePreferences();
   applyTranslations();
   for (const pane of state.panes) if (pane.element) applyTranslations(pane.element);
   $('#language-select').value = state.language;
-  const accent = document.querySelector('input[name="accent"][value="' + state.accent + '"]');
-  if (accent) accent.checked = true;
+  const theme = document.querySelector('input[name="theme"][value="' + state.theme + '"]');
+  if (theme) theme.checked = true;
   renderPlugins();
   renderAll();
   if (state.suggestion) renderDiff(state.suggestion.before, state.suggestion.after);
@@ -1220,8 +1220,8 @@ for (const type of ['dragover', 'drop']) document.addEventListener(type, (event)
 });
 for (const button of document.querySelectorAll('[data-view]')) button.addEventListener('click', () => setView(button.dataset.view));
 $('#language-select').addEventListener('change', (event) => { state.language = event.target.value; updatePreferences(); });
-for (const input of document.querySelectorAll('input[name="accent"]')) {
-  input.addEventListener('change', () => { if (input.checked) { state.accent = input.value; updatePreferences(); } });
+for (const input of document.querySelectorAll('input[name="theme"]')) {
+  input.addEventListener('change', () => { if (input.checked) { state.theme = input.value; updatePreferences(); } });
 }
 elements.focusSource.addEventListener('change', renderFocusPicker);
 $('#focus-previous').addEventListener('click', () => { if (state.focusPage > 0) { state.focusPage -= 1; renderFocusPicker(); } });
