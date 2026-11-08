@@ -1,0 +1,14 @@
+{
+  "name": "local-editor-demo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local text and Markdown editor demonstration",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  }
+}
