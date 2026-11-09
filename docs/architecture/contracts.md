@@ -1,6 +1,6 @@
-# 数据与状态契约 v0.4
+# 数据与状态契约 v0.5
 
-状态：**待实施设计**。延续内核权威状态及独立视图/选区，新增与模型无关的智能编辑上下文和有界工具往返；插件页面、模型和工具不成为第二个文档仓库。接口见 [Kernel API](kernel-api.md)，扩展点见 [插件协议](plugin-system.md)，页面契约见 [文档视图](document-views.md)，执行流程见 [模型与工具](model-tools.md)。
+状态：**待实施设计**。延续内核权威状态、独立视图/选区、智能编辑上下文和有界工具往返，新增唯一模型激活与有序插件路由状态；插件页面、模型和工具不成为第二个文档仓库。接口见 [Kernel API](kernel-api.md)，扩展点见 [插件协议](plugin-system.md)，页面契约见 [文档视图](document-views.md)，执行流程见 [模型与工具](model-tools.md)。
 
 ## 1. 身份与所有权
 
@@ -21,6 +21,26 @@
 | toolId / toolCallId | 插件贡献 / 模型插件规范化 | 工具 ID 带命名空间；调用 ID 在执行内唯一，不构成权限 |
 
 所有 ID 为 opaque 值，不等于权限。内核校验 session/主体/资源归属；插件拿不到跨会话 ID 的解析权。多个内核实例互不共享凭据、授权或文档句柄。
+
+### 1.1 唯一模型激活与插件路由状态
+
+```ts
+interface ActiveModelState {
+  activeModelProfileId: string | null; // 同一内核实例至多一个，模拟器也计入
+  activationRevision: number;
+}
+interface FileRoutingPolicy {
+  routingRevision: number;
+  defaultPluginOrder: string[];       // 文件类型/视图插件 ID，越前越优先
+  perFileTypeOrders: Record<string, string[]>; // 同一集合的按类型完整排列
+}
+```
+
+两者由内核持有，作用于该实例全部宿主连接与会话；权限范围不因共享选择而扩大。零插件时激活槽为 null，顺序为空。modelProfileId 指向具体模型配置及接入贡献，不等于 pluginId；可保存多份配置，仅一个能进入执行。registryRevision 另外记录已安装/启用贡献及代次变化。
+
+激活切换用 expectedActivationRevision 校验，活动 run 或尚未释放的本地模型调用阻止切换/清空；成功后旧计划失效，已有提案保留来源。插件故障可强制撤销槽并拒绝迟到结果，新激活须待旧调用在本地释放或隔离。模型详情及凭据按主体授权过滤，不能借全局槽读取另一会话内容。
+
+顺序更新用 expectedRoutingRevision 原子替换，不允许重复、遗漏或未知插件。新增文件插件追加末尾并递增水位，停用保留位置；移除删条目，升级保留次序。fileTypeKey 取规范化扩展名，无扩展名以空键表示；类型内容仍由插件识别。解析记录含两个路由水位、匹配链、选中贡献和选中原因，绑定后不随调序自动更换。
 
 ## 2. 文档基础模型
 
@@ -44,6 +64,7 @@ interface DocumentState {
   model: 'text/v1';
   source: DocumentSource;
   typeBinding: PluginBinding | null; // 纯内存文档可不绑定类型插件
+  fileTypeKey: string | null;        // 打开/导入时的路由键，纯内存文档可为空
   displayName: string;
   content: string;                  // 规范化 LF 的有效 Unicode
   version: number;                  // 每次内容事务递增，undo 也不回退
@@ -149,9 +170,9 @@ views.close 只撤销对应通道、租约、订阅和临时 selection，不删�
 
 context.snapshot 按请求和现有引用/关注/聚焦生成 EditingContext 投影，包含版本水位、目标范围、说明和明确参考；不要求模型插件，不联网、不隐式应用 pending、不授权工具。首期上下文仍以 text/v1 快照和精确范围表达。
 
-plans.prepare 输入含所选模型实例、请求、上下文选择 ID、候选 toolIds 白名单和 expected context/version 水位，内核在输入协调及既有策略处理后读取自己的快照；不让客户端上传 before 全文、editable 或自报批准范围。通过发送确认的投影成为 ApprovedEditingContext。模型插件和工具仅获各自执行批准的内容，不能访问全库。
+plans.prepare 输入含 expectedActivationRevision、请求、上下文选择 ID、候选 toolIds 白名单和 expected context/version 水位，内核从唯一激活槽读取模型，在输入协调及既有策略处理后读取自己的快照；不接受任意替代模型，也不让客户端上传 before 全文、editable 或自报批准范围。无激活模型时先返回 MODEL_NOT_ACTIVE，不触发 pending 隐式应用。通过发送确认的投影成为 ApprovedEditingContext。模型插件和工具仅获各自执行批准的内容，不能访问全库。
 
-PreparedPlan 包含 planId、hash、目标 document/version/scope、rangeIds、快照引用、实际发送文本/说明、模型实例/目的服务配置版本、所选工具 ID/schema 摘要/effect/readRequirement、各工具读/提案范围、使用到的插件绑定、总步骤/调用/字节预算和过期时间。confirmationId 绑定这些内容及工具结果可回传模型的数据流；相关正文/范围/工具/模型配置或实际依赖插件代次变化都要重建，单纯切换页面不影响它，prepare 不联网。
+PreparedPlan 包含 planId、hash、目标 document/version/scope、rangeIds、快照引用、实际发送文本/说明、唯一激活的 modelProfileId/activationRevision/目的服务配置版本、所选工具 ID/schema 摘要/effect/readRequirement、各工具读/提案范围、使用到的插件绑定、总步骤/调用/字节预算和过期时间。confirmationId 绑定这些内容及工具结果可回传模型的数据流；相关正文/范围/工具/模型激活或配置/实际依赖插件代次变化都要重建。单纯切换页面或调序不改变已有绑定和冻结工具目录，prepare 不联网。
 
 全局请求存在则选全部关注目标，有聚焦只改聚焦范围；只有聚焦说明则跳过无聚焦文档。只读聚焦作为参考并优先于显式引用快照；关注文档不会自动成为其他目标的参考。界面显示实际发送/未采用的内容。无聚焦整文档目标允许唯一 `[0,0)` 空文档插入范围。
 
@@ -198,3 +219,5 @@ accept-on-next-action 是内核策略：实际输入、save 或新生成前处�
 无 DOM 客户端与网页/嵌入宿主完成同一事务序列；覆盖乱序/重复响应、丢失响应、event gap、租约过期、IME、保存中输入、插件故障/升级、同名导入、同资源双缓冲区、undo 后版本、非连续聚焦、旧模型结果、取消、资源冲突与内存限额。新增视图/选区越权、同连接多视图单写、切换失败与队列排空、关闭视图不删除上下文、视图绑定不误使业务计划过期的验收。当前 Demo 的测试基线只是迁移依据，不是这些新契约已实现的证据。
 
 模型/工具另测无模型上下文查询、已批准片段边界、多目标执行隔离、schema/effect 校验、候选暂存/选择/冲突、去重、预算、native/emulated/none 能力不匹配及取消/升级失效。模拟器测试和真实服务连接验收分别报告。
+
+激活/路由另测实例内唯一模型、跨客户端并发 set/start、旧激活水位、活动任务切换拒绝、多插件同时启用、泛化与精确处理顺序、停用后继、错误不静默降级、并发调序、既有文档/提案不被重绑，以及同包多贡献仍需唯一选择。

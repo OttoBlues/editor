@@ -1,6 +1,6 @@
 # 文档视图与插件页面 v1 草案
 
-状态：**待实施设计**。这是架构 v0.3 新增的扩展契约，尚未实现插件页面运行时。依据 [架构总览](README.md)、[内核接口](kernel-api.md)、[插件协议](plugin-system.md) 和 [数据契约](contracts.md)。
+状态：**待实施设计，随架构 v0.5 修订**。这是架构 v0.3 新增的扩展契约，尚未实现插件页面运行时；v0.5 将默认选择接入按文件类型的插件排序。依据 [架构总览](README.md)、[内核接口](kernel-api.md)、[插件协议](plugin-system.md) 和 [数据契约](contracts.md)。
 
 ## 1. 文件打开后的页面由插件决定
 
@@ -53,6 +53,7 @@ interface DocumentViewContribution {
   kind: 'document-view/v1';
   id: string;
   title: string;
+  defaultForPlugin?: boolean;         // 同包多个兼容视图时，最多一个可作为默认
   matches: {
     models: string[];                 // 首期只可填 text/v1
     typeContributions?: string[];     // 如 editor.markdown/markdown
@@ -75,15 +76,17 @@ interface DocumentViewContribution {
 
 ## 3. 打开和选择视图
 
-1. `documents.open/import` 通过资源源和类型插件建立权威文档，固定 typeBinding。
-2. `views.resolve` 根据已解码模型、类型绑定、已启用视图和宿主已登记运行时能力列出兼容候选；不执行 UI 代码。
-3. 调用者显式选择，或采用仍有效的用户偏好/发行配置；只有一个兼容候选时可选用它。多个候选且无选择返回 `CAPABILITY_AMBIGUOUS`，不按安装顺序抢占。
+1. `documents.open/import` 按显式选择或文件类型插件排序建立权威文档，固定 typeBinding 和 fileTypeKey。
+2. `views.resolve` 根据已解码模型、类型绑定、已启用视图和宿主已登记运行时能力列出兼容候选；使用该 fileTypeKey 对应顺序，不执行 UI 代码。
+3. 调用者显式选择时校验该视图；否则按插件排序取首个兼容插件的视图。纯内存文档使用默认顺序。同包多视图需显式视图 contributionId 或唯一 defaultForPlugin 贡献，否则返回 `CAPABILITY_AMBIGUOUS`；多个不同插件的兼容候选本身不构成歧义。旧视图偏好不得隐式盖过用户新排序，明确的本次选择不改变全局顺序。
 4. 宿主调用 `views.open` 建立绑定并取得内核状态水位，以匹配的运行时加载包、创建文档范围通道和挂载页面。未完成状态同步前视图只读。
 5. 运行时确认页面就绪；编辑模式必须获取当前文档写租约才开放输入，只读页面不需要输入租约。首次挂载不会自动加入关注或触发生成。
 
 视图不存在或宿主不支持其运行时时，返回 `VIEW_UNAVAILABLE` 或 `VIEW_RUNTIME_UNSUPPORTED`；已解码文档继续留在内核。宿主可展示状态/取回正文的诊断面板，或让用户选择另一个已安装的兼容视图。诊断面板不冒充原格式编辑器，也不是内核隐含的文本插件。
 
 一个 documentId 可以有多个 viewId，共享同一内核正文；同一资源打开成另一个 documentId 仍是独立缓冲区。切换页面模式或视图本身不会重新 decode、改变 typeBinding、自动迁移草稿或接受待确认提案；切换前排空的真实人工输入仍按既有输入策略处理，不能把它伪装成纯导航。
+
+调序不卸载已挂载页面。新视图解析/打开携带 registryRevision/routingRevision，过期须重新解析；运行时不兼容的候选可明确跳过，选定页面的挂载故障则返回错误，不把未提交输入迁移到下一插件。排序不让只支持其他类型契约的页面绕过兼容性检查，也不会自动加载未启用的泛化页面。
 
 ## 4. View SDK 与内核方法
 
@@ -215,7 +218,7 @@ interface ViewInstance {
 必须覆盖：
 
 - 零插件内核无视图贡献；无 UI 流程不加载 DOM/视图入口，纯视图插件不要求无界面 entry。
-- 同一格式多个视图、匹配歧义、用户选择、缺运行时、视图与类型绑定独立。
+- 同一格式多个插件按序选视图、同包多视图歧义、显式选择、缺运行时、调序不切换已挂载页面、视图与类型绑定独立。
 - Unicode/重复文本/隐藏标记/表格映射、非连续范围、范围外不变、过期 selection、超限和越权 documentId。
 - 点击或导航不自动关注/生成/应用；不关注仍可人工编辑，模型候选仍需关注及范围校验。
 - 两视图单写租约、IME 和队列排空、切换失败、关闭视图不关文档、迟到消息、视图单独故障及插件升级。

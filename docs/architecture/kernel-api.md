@@ -1,6 +1,6 @@
 # Kernel API v1 草案
 
-状态：**设计中，尚未实现，随架构 v0.4 修订**。依据 [架构总览](README.md)。这是宿主调用内核的统一业务契约；HTTP、IPC 和进程内调用只是传输适配。数据细节见 [数据契约](contracts.md)，插件侧接口见 [插件协议](plugin-system.md)，页面入口见 [文档视图](document-views.md)，模型边界见 [模型与工具契约](model-tools.md)。
+状态：**设计中，尚未实现，随架构 v0.5 修订**。依据 [架构总览](README.md)。这是宿主调用内核的统一业务契约；HTTP、IPC 和进程内调用只是传输适配。数据细节见 [数据契约](contracts.md)，插件侧接口见 [插件协议](plugin-system.md)，页面入口见 [文档视图](document-views.md)，模型边界见 [模型与工具契约](model-tools.md)。
 
 ## 1. 内核入口与身份
 
@@ -50,12 +50,13 @@ Q 表示查询，C 表示变更命令，J 表示创建异步任务。所有业�
 | plugins.list / describe | Q | 已安装包、启用状态、版本、权限和贡献清单 |
 | plugins.install / enable | C/J | 仅 host-admin；包引用来自可信宿主加载器，缺权限先返回确认要求 |
 | plugins.disable.prepare / commit、plugins.upgrade.prepare / commit、plugins.remove.prepare / commit | C/J | 列出占用和影响，绑定确认后执行生命周期变更 |
-| capabilities.list / resolve | Q | 有效贡献及指定操作的候选；多个匹配时要求显式选择 |
+| plugins.order.get / set | Q/C | 同一内核实例的默认/按类型插件顺序；set 仅 host-admin，带 expectedRoutingRevision，原子校验完整排列 |
+| capabilities.list / resolve | Q | 有效贡献及候选；文件类型按排序选首个支持者，返回理由及 registryRevision/routingRevision；同包多贡献无默认才需显式选择 |
 | workspaces.attach / detach | C | host-admin 提交 Host Ports 签发的资源授权凭证，返回工作区；不接受任意绝对路径 |
 | workspaces.list / resources.list | Q | 已授权资源源、目录游标、资源 ID 与元数据；不自动读取全部正文 |
 | documents.create | C | 显式创建内存 text/v1 文档；零插件可用，不识别文件扩展名 |
-| documents.open | C | resourceId、选择的 document-type contribution、复用或新开缓冲区意图 |
-| documents.import | C | 宿主已提交的 artifactId、文件元数据、选择的类型贡献；不获得覆盖原文件权限 |
+| documents.open | C | resourceId、可选显式类型贡献、复用或新开意图；默认按类型排序解析，复核候选与注册/排序水位 |
+| documents.import | C | 宿主已提交的 artifactId、文件元数据、可选显式类型贡献；使用相同有序路由，不获得覆盖原文件权限 |
 | documents.get / snapshot | Q | 返回权威文档及版本或指定不可变快照，按会话/文档授权 |
 | documents.write.acquire / renew / release | C | 取得/续期/释放文档写租约，绑定连接及 writerId（viewId、无 UI 客户端或短期 host-command）；不得抢占活跃写入者 |
 | documents.detach.prepare / commit | C | 保留正文，转为无类型绑定内存文档，撤销原格式保存能力 |
@@ -65,7 +66,7 @@ Q 表示查询，C 表示变更命令，J 表示创建异步任务。所有业�
 | documents.save | J | documentId、expectedVersion、saveId；内核编码并向原资源源保存，返回 operationId |
 | documents.export | J | 指定快照和编码能力，生成有界制品，不默认覆盖导入来源 |
 | documents.close.prepare / commit | C | 版本绑定的关闭计划；有 pending/dirty/活动保存时不得静默关闭 |
-| views.resolve | Q | documentId、可选视图选择；按文档模型/类型和可信宿主运行时求候选，歧义不自动抢占 |
+| views.resolve | Q | documentId、可选显式视图；筛文档模型/类型/运行时后按插件顺序解析，返回水位；同包无唯一默认时要求选择 |
 | views.open / get / list / close | C/Q | 宿主建立/查询/撤销文档范围视图绑定；记录插件版本/代次和连接，open 不执行 UI；close 不关闭文档 |
 | views.mode.set | C | 经输入协调切换贡献声明的 modeId，更新该视图编辑能力；只读模式撤销其输入写资格，不触发正文事务 |
 | selections.create / get / release | C/Q | snapshotId、version、text-ranges/v1；校验精确源范围并签发临时 selectionId，按文档/视图/主体隔离 |
@@ -73,10 +74,11 @@ Q 表示查询，C 表示变更命令，J 表示创建异步任务。所有业�
 | context.attention.add / remove / list | C/Q | 关注必须可编辑、支持该能力；移除撤销相关应用资格 |
 | context.focus.create / update / remove / list | C/Q | selectionId + 共同说明，或无 UI 客户端提交快照/精确范围走同一校验；角色由内核派生 |
 | context.snapshot | Q | 按已有引用/关注/聚焦及请求预览智能编辑上下文与版本水位；不要求模型插件，不授权发送或创建任务 |
-| models.list / configure / remove | Q/C | 已启用模型插件的配置 schema、实例版本、simulator/connected 及 native/emulated/none 能力；不含模型实现或密钥 |
+| models.list / configure / remove | Q/C | 模型配置及可用/激活状态、schema、版本、执行与工具支持模式；configure 不激活，活动配置删除前须清空槽 |
+| models.active.get / set | Q/C | 内核实例唯一 activeModelProfileId 或 null；set 仅 host-admin，带 expectedActivationRevision，活动 run 时返回 MODEL_BUSY |
 | credentials.set / clear / status | C/Q | 只设置/清理/查询存在状态，无读取密钥 API；绑定模型实例及端点 |
 | tools.list / describe | Q | 查询插件贡献的工具描述/schema/effect 与当前范围适用性，查询不授权调用；零插件为空 |
-| plans.prepare / get / cancel | C/Q | 从上下文建立发送清单，绑定模型配置、toolIds 白名单、工具 schema/版本、范围和总预算；prepare 不联网 |
+| plans.prepare / get / cancel | C/Q | 从唯一激活模型及上下文建计划，核对 expectedActivationRevision，绑定配置/激活版本、工具和总预算；prepare 不联网 |
 | runs.start / get / cancel | J/Q/C | 执行经确认计划的标准模型步骤/工具循环，返回 runId 及各目标 executionId；实际模型连接在插件，取消是终止意图 |
 | toolCalls.list / get | Q | 查询获准 run/execution 下的调用状态、结果或候选；不提供任意工具执行端点 |
 | proposals.list / get / compare | Q | 完整 before/after、状态、范围与差异数据 |
@@ -96,6 +98,10 @@ plugins.enable 遇到未授予的权限时返回权限清单和 confirmationId�
 context.snapshot 使用与 plans.prepare 相同的上下文解析规则，但不绑定模型/工具执行授权；无模型插件时也可使用。它只返回当前授权内容和水位，不创建发送确认票据，不触发 pending 隐式应用。plans.prepare 在输入协调及既有策略处理后重新读取内核状态，不能把旧预览直接当作已批准计划。plugin-view 只能取得本视图范围投影，不能读其他引用正文。
 
 tools.* 是插件能力目录，toolCalls.* 是执行记录；模型仅通过模型插件的 tool-calls 事件请求调用，内核内部 ToolBroker 根据已批准 run/execution 校验和分派。没有把 documents.* 或 commands.* 自动暴露给模型的入口。ModelProvider.step 实现服务协议，ToolHandler.invoke 实现工具，内核只处理标准 DTO、任务/预算/权限和候选提交。
+
+models.active 与 plugins.order 是实例级状态，由可信宿主管理入口代表用户变更，各客户端订阅同一状态；插件及其页面无权自行切换模型或调整优先级。启用多个插件不冲突，模型激活只选一个配置。runs.start 与模型激活/当前配置变更在同一调度边界复核，避免检查后又并发切换。
+
+基于候选预览的 documents.open/import、views.open 必须带 expectedRegistryRevision/expectedRoutingRevision；不经预览时由内核在操作起点冻结两者，完成绑定前再校验。调序/启停使未完成解析返回 ROUTING_STALE，调用方重新查看；不会重绑既有文档，也不使仅依赖既有绑定的模型计划过期。显式选择仍须通过兼容性和权限校验。
 
 ## 3. 变更、版本、幂等
 
@@ -147,6 +153,8 @@ interface KernelEvent {
 
 run 事件包含目标 executionId 和当前阶段 model/tools/validating；增加 tool-call 的 queued/running/completed/failed/cancelled 状态事件。工具返回的 data/candidate 经内核验证才发布；工具结果、transcript、候选内容按任务和文档权限过滤，默认日志不记录正文。
 
+增加 model.active.changed 与 plugin.order.changed，分别携带 activationRevision/routingRevision 和获准的状态投影；不广播其他会话正文。新连接通过状态快照恢复唯一模型选择与当前插件排序，不能各自在 UI 内保存另一套有效值。
+
 状态快照携带同一提交水位 seq，订阅从该游标继续，避免“先读快照再订阅”丢事件。有限 replay；游标过期返回 EVENT_GAP，SDK 重新取得快照后恢复投影，**不因此重发修改或模型请求**。新 kernelInstanceId 表示内核重启，旧 ID、票据、租约全部失效。
 
 慢订阅者有有界队列；不能无限占内存或拖慢文档命令。超限后断开该订阅并要求重同步。取消后的迟到结果按任务终态丢弃。UI 失联和用户关闭会话是不同事件，前者不删除文档。
@@ -173,6 +181,8 @@ HTTP 认证在路由前完成：未认证 401/403，传输过大 413；通过传
 messageKey 给宿主本地化，details 只放白名单 ID、版本、限制，不含原文、凭据、绝对路径或未过滤外部错误。无插件/缺平台端口是一等状态，不能用隐式实现填补。
 
 模型/工具新增：MODEL_PROTOCOL_INVALID、MODEL_TOOL_MODE_UNSUPPORTED、TOOL_UNAVAILABLE、TOOL_NOT_ALLOWED、TOOL_INPUT_INVALID、TOOL_OUTPUT_INVALID、TOOL_CALL_MISMATCH、TOOL_BUDGET_EXCEEDED、RUN_NOT_ACTIVE、CANDIDATE_CONFLICT。可恢复调用错误仅返回脱敏 ToolReport；协议损坏、版本/权限失效或总预算耗尽终止执行。
+
+激活/排序新增：MODEL_NOT_ACTIVE、MODEL_BUSY、MODEL_ACTIVATION_STALE、PLUGIN_ORDER_INVALID、ROUTING_STALE。CAPABILITY_AMBIGUOUS 保留给无法由已定义顺序解决的同包多贡献等情况，不用于多个有序插件均支持同一类型的正常场景。
 
 ## 9. Host Ports 最小契约
 
