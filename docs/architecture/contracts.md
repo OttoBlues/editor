@@ -1,6 +1,6 @@
-# 数据与状态契约 v0.3
+# 数据与状态契约 v0.4
 
-状态：**待实施设计**。延续 v0.2 的内核权威状态，新增独立视图绑定与源选区；插件页面不成为第二个文档仓库。接口见 [Kernel API](kernel-api.md)，扩展点见 [插件协议](plugin-system.md)，页面契约见 [文档视图](document-views.md)。
+状态：**待实施设计**。延续内核权威状态及独立视图/选区，新增与模型无关的智能编辑上下文和有界工具往返；插件页面、模型和工具不成为第二个文档仓库。接口见 [Kernel API](kernel-api.md)，扩展点见 [插件协议](plugin-system.md)，页面契约见 [文档视图](document-views.md)，执行流程见 [模型与工具](model-tools.md)。
 
 ## 1. 身份与所有权
 
@@ -17,6 +17,8 @@
 | writerId / leaseId | 可信输入端身份 / 内核租约 | 页面对应 viewId；无 UI 客户端或宿主业务命令另绑定，始终同文档单写 |
 | tabId / paneId | 宿主 UI | 纯视图标识，不作文件/编辑授权 |
 | snapshotId / proposalId / planId / runId | 内核 | 会话隔离、不可猜测、按引用和限额保留 |
+| executionId / candidateId | 内核 | 一个 run 中目标文档的执行 / 工具暂存候选，终态后不能复用来改新版本 |
+| toolId / toolCallId | 插件贡献 / 模型插件规范化 | 工具 ID 带命名空间；调用 ID 在执行内唯一，不构成权限 |
 
 所有 ID 为 opaque 值，不等于权限。内核校验 session/主体/资源归属；插件拿不到跨会话 ID 的解析权。多个内核实例互不共享凭据、授权或文档句柄。
 
@@ -143,25 +145,33 @@ views.close 只撤销对应通道、租约、订阅和临时 selection，不删�
 
 全局 contextRevision 使待执行计划失效；逐文档 scopeRevision 在关注、权限、目标聚焦、类型绑定变化时递增。无关文档变更不必令已完成提案失效；只改请求或引用不改变已有提案，其依据仍是生成时快照。
 
-## 6. 发送计划由内核构建
+## 6. 智能编辑上下文与执行计划
 
-plans.prepare 输入仅含模型实例、请求、上下文选择 ID 和 expected context/version 水位，内核读取自己的快照；不再让客户端上传 before 全文、editable 或自报批准范围。模型插件仅收到批准的 sendItems，不得访问全库。
+context.snapshot 按请求和现有引用/关注/聚焦生成 EditingContext 投影，包含版本水位、目标范围、说明和明确参考；不要求模型插件，不联网、不隐式应用 pending、不授权工具。首期上下文仍以 text/v1 快照和精确范围表达。
 
-PreparedPlan 包含 planId、hash、目标 document/version/scope、rangeIds、快照引用、实际发送文本/说明、endpoint/model 配置版本、使用到的插件绑定、预算和过期时间。confirmationId 绑定同一计划，相关正文/范围/模型端点/实际依赖插件代次变化都要重建；单纯切换页面不影响它，prepare 不联网。
+plans.prepare 输入含所选模型实例、请求、上下文选择 ID、候选 toolIds 白名单和 expected context/version 水位，内核在输入协调及既有策略处理后读取自己的快照；不让客户端上传 before 全文、editable 或自报批准范围。通过发送确认的投影成为 ApprovedEditingContext。模型插件和工具仅获各自执行批准的内容，不能访问全库。
+
+PreparedPlan 包含 planId、hash、目标 document/version/scope、rangeIds、快照引用、实际发送文本/说明、模型实例/目的服务配置版本、所选工具 ID/schema 摘要/effect/readRequirement、各工具读/提案范围、使用到的插件绑定、总步骤/调用/字节预算和过期时间。confirmationId 绑定这些内容及工具结果可回传模型的数据流；相关正文/范围/工具/模型配置或实际依赖插件代次变化都要重建，单纯切换页面不影响它，prepare 不联网。
 
 全局请求存在则选全部关注目标，有聚焦只改聚焦范围；只有聚焦说明则跳过无聚焦文档。只读聚焦作为参考并优先于显式引用快照；关注文档不会自动成为其他目标的参考。界面显示实际发送/未采用的内容。无聚焦整文档目标允许唯一 `[0,0)` 空文档插入范围。
 
-按文档独立调用模型，共用显式参考，默认串行；同任务所有候选通过再发布提案，一个失败不发布部分可应用结果。不同文档任务可并行但有限额，同文档只一个活动任务。内核直接观察文档变化并取消/过期相关 run，迟到结果不发布；不用 UI 通知作为唯一防线。
+一个 run 按目标文档建立独立 executionId，共用明确参考，默认串行；每个执行可有 model step → tool calls → model step 的多轮循环。内核只分派规范消息，真实模型通信/工具格式转换在模型插件，工具实现位于 tool/v1 贡献。一个执行的工具不能读取另一个目标的正文；要读全文须在计划中明确批准，不能由片段处理偷偷升级。
 
-状态为 prepared → running → validating → completed，另有 failed/cancelled/expired 终态。流式文本只作进度，完整候选通过才可审查。用户重试建新计划；不因断线自动重调可能计费的服务。
+ToolCallRecord 记录 runId/executionId/toolCallId、工具 binding、参数摘要、状态、预算使用及结果引用。状态为 queued/running/completed/failed/cancelled；相同调用键不同参数拒绝，同请求去重，同一 run 的累计时限/预算不随 step 重置。结果对话记录属于内核任务数据，供后续 step 使用，不默认落日志或持久存储。
+
+effect=propose 的工具结果只暂存 ToolCandidate，包含 candidateId、调用来源、baseVersion/baseScopeRevision、精确 edits 和内容摘要。它不是 pending 提案，不改正文、历史或 dirty。模型 complete 显式选择本执行 candidateIds，可另提供直接 edits；内核合并校验，重复/重叠范围拒绝，未选候选丢弃。所有候选都基于计划快照，前一步不会变成新的文档版本。
+
+同 run 所有目标最终结果通过再发布提案，一个失败不发布部分可应用结果。不同文档任务可并行但有限额，同文档只一个活动任务。内核直接观察文档变化并取消/过期相关 run；权限撤销后不再向插件交正文结果，迟到结果不发布，不用 UI 通知作为唯一防线。
+
+状态为 prepared → running → validating → completed，另有 failed/cancelled/expired 终态；running 中的 model/tools 是步骤阶段。流式文本只作进度，每 step 必须以 tool-calls 或 complete 唯一终结，完整最终候选通过才可审查。用户重试建新计划；不因断线自动重调可能计费的服务。
 
 ## 7. 提案、差异、应用
 
-模型候选只含 message 和 `{documentId,rangeId,replacement}` 数组。内核取计划中的 start/end，拒绝未知目标/范围、重复替换、超限、非法文本和未知结构字段；replacement 内像命令的内容也只是文档文字，不执行。
+模型 complete 包含 message、选用的 candidateIds 和直接 `{documentId,rangeId,replacement}` 数组，内核将它们归并为同一种候选结构。候选 ID 必须属于本 execution 的已验证暂存结果。内核取计划中的 start/end，拒绝未知目标/范围、重复替换、超限、非法文本和未知结构字段；replacement 内像命令的内容也只是文档文字，不执行。
 
 未返回范围视为不改；空 replacement 删除该已授权范围。倒序替换构造 after，范围外原文不变；非连续合并可在首范围写合并文本、其余所选范围写空串，不能删除中间未选内容。before=after 不建 pending。
 
-ChangeProposal 由内核生成，含 proposalId、runId、documentId、baseVersion、baseScopeRevision、before/after 快照、edits、使用的插件版本、status/reason。每文档最多一个 pending，状态为 pending/applied/discarded/expired。
+ChangeProposal 由内核生成，含 proposalId、runId、executionId、documentId、baseVersion、baseScopeRevision、before/after 快照、edits、使用的模型/工具插件绑定和候选来源、status/reason。每文档最多一个 pending，状态为 pending/applied/discarded/expired。
 
 proposals.apply 校验租约、身份、文档仍打开可编辑且关注、版本/范围版本、before 一致、保存状态及依赖能力有效，再执行内核事务。compare 返回完整行级左右差异和位置映射，宿主不重写比较逻辑。应用不保存，撤销生成新版本，不复活旧提案。
 
@@ -169,7 +179,7 @@ accept-on-next-action 是内核策略：实际输入、save 或新生成前处�
 
 ## 8. 插件绑定与缓存
 
-文档、视图、分块、预览、计划、提案都记录实际使用的 binding/generation。类型/资源/模型绑定属于相应业务依赖；纯视图绑定不是模型计划或提案的必备依赖，换页面不自动使其失效。同包整体升级改变了业务依赖时仍按原规则过期。插件失效使相关派生能力不可用、冻结操作，不能把同名新版的输出当旧结果。停用/升级按占用处理，非正文派生数据可重新计算，但不能悄悄重新 decode 草稿。
+文档、视图、分块、预览、计划、工具调用/候选、提案都记录实际使用的 binding/generation。类型/资源/模型/工具绑定属于相应业务依赖；纯视图绑定不是模型计划或提案的必备依赖，换页面不自动使其失效。同包整体升级改变了业务依赖时仍按原规则过期。插件失效使相关派生能力不可用、冻结操作，不能把同名新版的输出当旧结果。停用/升级按占用处理，非正文派生数据可重新计算，但不能悄悄重新 decode 草稿。
 
 正文在内核，故插件崩溃不丢文档。Host SDK 的投影不是第二个源；事件重连采用 snapshot+cursor，一旦 gap 重取，不用客户端旧正文恢复覆盖内核。错误信息和事件正文受同会话访问控制。
 
@@ -181,6 +191,10 @@ accept-on-next-action 是内核策略：实际输入、save 或新生成前处�
 
 偏好和插件非敏感配置可存本地，正文/会话历史默认内存；可选持久恢复另设开关、格式迁移、保留期和清理。凭据用宿主安全存储或会话内存，无明文回退。默认日志仅 ID/计数/耗时/错误，正文、提示词、路径、凭据不得落日志。
 
+工具描述/schema、参数、结果、候选和 transcript 同样计入总内存与发送预算；步骤数、调用数、结果字节和执行时限必须有界，不能靠拆成多轮绕过限制。未选候选按终态回收，已发布提案保留自身 before/after 和来源，不依赖工具处理器继续存活。
+
 ## 10. 契约验收
 
 无 DOM 客户端与网页/嵌入宿主完成同一事务序列；覆盖乱序/重复响应、丢失响应、event gap、租约过期、IME、保存中输入、插件故障/升级、同名导入、同资源双缓冲区、undo 后版本、非连续聚焦、旧模型结果、取消、资源冲突与内存限额。新增视图/选区越权、同连接多视图单写、切换失败与队列排空、关闭视图不删除上下文、视图绑定不误使业务计划过期的验收。当前 Demo 的测试基线只是迁移依据，不是这些新契约已实现的证据。
+
+模型/工具另测无模型上下文查询、已批准片段边界、多目标执行隔离、schema/effect 校验、候选暂存/选择/冲突、去重、预算、native/emulated/none 能力不匹配及取消/升级失效。模拟器测试和真实服务连接验收分别报告。

@@ -1,6 +1,6 @@
 # Kernel API v1 草案
 
-状态：**设计中，尚未实现，随架构 v0.3 修订**。依据 [架构总览](README.md)。这是宿主调用内核的统一业务契约；HTTP、IPC 和进程内调用只是传输适配。数据细节见 [数据契约](contracts.md)，插件侧接口见 [插件协议](plugin-system.md)，页面入口见 [文档视图](document-views.md)。
+状态：**设计中，尚未实现，随架构 v0.4 修订**。依据 [架构总览](README.md)。这是宿主调用内核的统一业务契约；HTTP、IPC 和进程内调用只是传输适配。数据细节见 [数据契约](contracts.md)，插件侧接口见 [插件协议](plugin-system.md)，页面入口见 [文档视图](document-views.md)，模型边界见 [模型与工具契约](model-tools.md)。
 
 ## 1. 内核入口与身份
 
@@ -72,10 +72,13 @@ Q 表示查询，C 表示变更命令，J 表示创建异步任务。所有业�
 | context.references.add / remove / list | C/Q | 从内核快照生成独立只读引用；来源关闭不删除引用 |
 | context.attention.add / remove / list | C/Q | 关注必须可编辑、支持该能力；移除撤销相关应用资格 |
 | context.focus.create / update / remove / list | C/Q | selectionId + 共同说明，或无 UI 客户端提交快照/精确范围走同一校验；角色由内核派生 |
-| models.list / configure / remove | Q/C | 已启用模型插件的配置 schema、实例配置和版本；不含密钥 |
+| context.snapshot | Q | 按已有引用/关注/聚焦及请求预览智能编辑上下文与版本水位；不要求模型插件，不授权发送或创建任务 |
+| models.list / configure / remove | Q/C | 已启用模型插件的配置 schema、实例版本、simulator/connected 及 native/emulated/none 能力；不含模型实现或密钥 |
 | credentials.set / clear / status | C/Q | 只设置/清理/查询存在状态，无读取密钥 API；绑定模型实例及端点 |
-| plans.prepare / get / cancel | C/Q | 从内核已有上下文建立最终发送清单；prepare 不联网 |
-| runs.start / get / cancel | J/Q/C | 执行经确认的冻结计划，返回 runId；取消是终止意图 |
+| tools.list / describe | Q | 查询插件贡献的工具描述/schema/effect 与当前范围适用性，查询不授权调用；零插件为空 |
+| plans.prepare / get / cancel | C/Q | 从上下文建立发送清单，绑定模型配置、toolIds 白名单、工具 schema/版本、范围和总预算；prepare 不联网 |
+| runs.start / get / cancel | J/Q/C | 执行经确认计划的标准模型步骤/工具循环，返回 runId 及各目标 executionId；实际模型连接在插件，取消是终止意图 |
+| toolCalls.list / get | Q | 查询获准 run/execution 下的调用状态、结果或候选；不提供任意工具执行端点 |
 | proposals.list / get / compare | Q | 完整 before/after、状态、范围与差异数据 |
 | proposals.apply / discard | C | expectedVersion、scopeRevision、proposalId；应用只进缓冲区 |
 | operations.get / cancel | Q/C | 查询保存/导出/生命周期任务；进入资源提交点后可拒绝取消 |
@@ -90,6 +93,10 @@ Q 表示查询，C 表示变更命令，J 表示创建异步任务。所有业�
 
 plugins.enable 遇到未授予的权限时返回权限清单和 confirmationId；host-admin 经用户授权后携票据重试，不能用 interactive-client 自报权限替代。API 线上主版本为 1，kernel.describe 另返回完整契约语义版本和特性集合；插件 manifest 的兼容范围针对完整版本，同主版本只能作向后兼容增加。
 
+context.snapshot 使用与 plans.prepare 相同的上下文解析规则，但不绑定模型/工具执行授权；无模型插件时也可使用。它只返回当前授权内容和水位，不创建发送确认票据，不触发 pending 隐式应用。plans.prepare 在输入协调及既有策略处理后重新读取内核状态，不能把旧预览直接当作已批准计划。plugin-view 只能取得本视图范围投影，不能读其他引用正文。
+
+tools.* 是插件能力目录，toolCalls.* 是执行记录；模型仅通过模型插件的 tool-calls 事件请求调用，内核内部 ToolBroker 根据已批准 run/execution 校验和分派。没有把 documents.* 或 commands.* 自动暴露给模型的入口。ModelProvider.step 实现服务协议，ToolHandler.invoke 实现工具，内核只处理标准 DTO、任务/预算/权限和候选提交。
+
 ## 3. 变更、版本、幂等
 
 内核串行处理同文档命令，避免 check 与 apply 分成两个可穿插操作。每个 C/J 方法在目录里声明是否需要 idempotencyKey；凡会改内容、创建任务、确认授权或改变插件生命周期的命令必须提供。查询不需要。
@@ -98,6 +105,8 @@ plugins.enable 遇到未授予的权限时返回权限清单和 confirmationId�
 
 返回事件游标是已提交变更的水位。响应和事件可先后到达，SDK 按事务 ID/版本去重，不重复应用同一变更。失败不得悄悄执行部分正文变更；跨文档操作逐文档报告，不承诺分布式或跨文件事务。
 
+模型工具调用另以 runId + executionId + toolCallId 去重，并绑定工具和参数摘要；工具处理中重复请求复用原状态，不再次分派。调用 ID 由模型插件规范化，内核核对任务与主体，不采信请求内自报权限。任务终态或权限撤销后不向旧调用返回正文结果。
+
 ## 4. 确认是内核协议的一部分
 
 确认由内核 prepare 生成 `{confirmationId, operation, resourceVersions, summary, expiresAt}`，绑定发起主体、会话、精确内容和操作。宿主展示 summary，用户操作后携票据 commit/start；内核再次核对版本与授权。票据一次使用，重复请求由幂等层返回原结果。不能提交客户端自造的 approved 布尔值。
@@ -105,6 +114,8 @@ plugins.enable 遇到未授予的权限时返回权限清单和 confirmationId�
 发送模型、丢弃脏文档、影响文档的插件禁用/升级等操作使用这一模式。非敏感可逆命令按已确认策略执行，不对每个按键弹确认。修改计划、端点、实际依赖的插件代次或来源版本使旧票据失效，单纯切换文档视图不改变业务票据。
 
 插件只能返回建议操作/状态，不能获取用户确认票据。可信互动宿主代表用户传达操作，内核不能靠票据证明真实人点击过按钮；这是应用信任边界，不宣称可以防住已被攻陷的宿主。
+
+发送确认还覆盖允许工具、精确读/提案范围、调用预算及工具结果可回传的模型目的服务。范围内工具循环不逐次确认；新增工具/文件/范围或切换服务必须重建计划。原生与文本模拟工具调用走相同验证，不因兼容模式降级。
 
 ## 5. 输入与隐式应用
 
@@ -134,6 +145,8 @@ interface KernelEvent {
 
 事件覆盖 session、plugin、capability、document、view、selection、context、proposal、run、operation 和 host-effect。领域事件由内核生成；插件只能返回原始进度/结果，不能自行宣告 document.changed 或 proposal.applied。视图绑定、选区失效为内核事件，实际 mount/ready/渲染失败为宿主运行时状态，不能混同。预览/流式正文也受原会话访问控制。plugin-view 的快照和订阅均按文档/动作过滤，不把会话级正文交给页面。
 
+run 事件包含目标 executionId 和当前阶段 model/tools/validating；增加 tool-call 的 queued/running/completed/failed/cancelled 状态事件。工具返回的 data/candidate 经内核验证才发布；工具结果、transcript、候选内容按任务和文档权限过滤，默认日志不记录正文。
+
 状态快照携带同一提交水位 seq，订阅从该游标继续，避免“先读快照再订阅”丢事件。有限 replay；游标过期返回 EVENT_GAP，SDK 重新取得快照后恢复投影，**不因此重发修改或模型请求**。新 kernelInstanceId 表示内核重启，旧 ID、票据、租约全部失效。
 
 慢订阅者有有界队列；不能无限占内存或拖慢文档命令。超限后断开该订阅并要求重同步。取消后的迟到结果按任务终态丢弃。UI 失联和用户关闭会话是不同事件，前者不删除文档。
@@ -159,6 +172,8 @@ HTTP 认证在路由前完成：未认证 401/403，传输过大 413；通过传
 
 messageKey 给宿主本地化，details 只放白名单 ID、版本、限制，不含原文、凭据、绝对路径或未过滤外部错误。无插件/缺平台端口是一等状态，不能用隐式实现填补。
 
+模型/工具新增：MODEL_PROTOCOL_INVALID、MODEL_TOOL_MODE_UNSUPPORTED、TOOL_UNAVAILABLE、TOOL_NOT_ALLOWED、TOOL_INPUT_INVALID、TOOL_OUTPUT_INVALID、TOOL_CALL_MISMATCH、TOOL_BUDGET_EXCEEDED、RUN_NOT_ACTIVE、CANDIDATE_CONFLICT。可恢复调用错误仅返回脱敏 ToolReport；协议损坏、版本/权限失效或总预算耗尽终止执行。
+
 ## 9. Host Ports 最小契约
 
 Host Ports 是内核调用宿主机制的方向，与宿主调用 Kernel API 相反；插件只拿本次调用的缩小版代理。原始平台端口只在启动装配阶段注入，不暴露给网页或插件。接口不传 Node FileHandle、DOM File、绝对路径等宿主对象；用 bytes、opaque 句柄和 schema 定义的数据。
@@ -180,3 +195,5 @@ Host Ports 是内核调用宿主机制的方向，与宿主调用 Kernel API 相
 ## 10. 接口完成标准
 
 所有目录方法有 schema、权限声明、错误集合和一致性测试；零插件启动、类型/视图/来源/模型分开装配、无 DOM 完整工作流均通过。至少在网页和一个极简嵌入测试宿主中用同一 SDK 验证打开、编辑、聚焦、模拟、应用、撤销、保存与冲突，第二宿主不能包含重复业务逻辑。额外验证视图绑定/选区越权与失效、同连接多视图单写、输入排空和只关闭视图不关闭文档；UI 渲染与真实输入法另做宿主验收。
+
+另验无模型的 context.snapshot、空工具目录、模拟/适配模型插件替换、工具范围过滤、多轮结果回流、候选暂存与最终选择、去重/预算/取消及错误。内核依赖闭包中不得出现供应商模型协议或具体工具实现。
