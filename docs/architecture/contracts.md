@@ -1,269 +1,161 @@
-# 数据与协议契约草案
+# 数据与状态契约 v0.2
 
-状态：**待实施的 v1 设计，不是现有 API 文档**。关联 [架构总览](README.md) 与 [迁移计划](implementation-plan.md)。字段采用 TypeScript 风格表达，实施时须配套运行时 schema 与测试；类型声明不能校验浏览器或模型输入。
+状态：**待实施设计**。替代 v0.1 中浏览器拥有业务缓冲区、浏览器执行应用/放弃、客户端上传全文创建计划的方案。内核是权威状态所有者，接口见 [Kernel API](kernel-api.md)，扩展点见 [插件协议](plugin-system.md)。
 
-## 1. 标识、正文和版本
+## 1. 身份与所有权
 
-所有 ID 均为 opaque 字符串，按本地会话隔离。内核签发 workspaceId、fileId、planId、runId；浏览器生成文档、标签和上下文项 ID。ID 不能替代认证、工作区授权或文件权限检查。
+| 对象 | 签发/拥有者 | 生命周期 |
+| --- | --- | --- |
+| kernelInstanceId | 内核启动实例 | 重启改变，旧票据/租约不可复用 |
+| sessionId | 内核，会话绑定用户主体 | 与网页连接分离，显式关闭或宿主关闭内核才结束 |
+| connectionId / clientId | 经认证的宿主连接 | 断线可变；resume 不能仅靠猜 sessionId |
+| pluginId / contributionId | manifest；内核注册 | 安装/启停管理，调用绑定 pluginGeneration |
+| workspaceId / resourceId | 内核结合资源插件签发 | 只能定位已授权资源，不接受任意路径代替 |
+| documentId | 内核 | 一份独立缓冲区；关闭后重新打开是新 ID |
+| tabId / paneId | 宿主 UI | 纯视图标识，不作文件/编辑授权 |
+| snapshotId / proposalId / planId / runId | 内核 | 会话隔离、不可猜测、按引用和限额保留 |
+
+所有 ID 为 opaque 值，不等于权限。内核校验 session/主体/资源归属；插件拿不到跨会话 ID 的解析权。多个内核实例互不共享凭据、授权或文档句柄。
+
+## 2. 文档基础模型
 
 ```ts
-type DocumentSource =
-  | { kind: 'workspace'; workspaceId: string; fileId: string }
-  | { kind: 'import'; importId: string };
-
-interface TextFormat {
-  encoding: 'utf8';
-  bom: boolean;
-  newline: 'LF' | 'CRLF' | 'CR' | 'none' | 'mixed';
+interface PluginBinding {
+  pluginId: string;
+  pluginVersion: string;
+  contributionId: string;
+  pluginGeneration: number;
+  configRevision: number;
 }
 
-interface DocumentBuffer {
+type DocumentSource =
+  | { kind: 'resource'; workspaceId: string; resourceId: string; sourceBinding: PluginBinding }
+  | { kind: 'import'; importId: string }
+  | { kind: 'memory' };
+
+interface DocumentState {
   documentId: string;
+  sessionId: string;
+  model: 'text/v1';
   source: DocumentSource;
+  typeBinding: PluginBinding | null; // 纯内存文档可不绑定类型插件
   displayName: string;
-  fileType: 'markdown' | 'text';
-  content: string;                 // 内部统一 LF
-  bufferVersion: number;           // 非负安全整数，编辑/撤销/应用后递增
-  savedContent: string;            // 最后成功保存或导出时捕获的正文
-  diskRevision: string | null;     // 导入文档必须为 null
-  format: TextFormat;
-  editable: boolean;
-  readOnlyReason: string | null;
+  content: string;                  // 规范化 LF 的有效 Unicode
+  version: number;                  // 每次内容事务递增，undo 也不回退
+  scopeRevision: number;            // 目标权限/聚焦变化
+  savedSnapshotId: string | null;
+  resourceRevision: string | null;
+  formatMetadata: unknown;          // 受类型插件 schema 约束，内核保管
+  access: { editable: boolean; reason: string | null };
 }
 
 interface TextSnapshot {
   snapshotId: string;
   documentId: string;
-  bufferVersion: number;
+  version: number;
   content: string;
-  snapshotHash: string;            // SHA-256(UTF-8 编码的规范化正文)
-}
-
-interface SourceRange {
-  rangeId: string;
-  start: number;                   // 包含，UTF-16 code unit 索引
-  end: number;                     // 不包含
-  original: string;                // snapshot.content.slice(start, end)
+  contentHash: string;
+  typeBinding: PluginBinding | null;
 }
 ```
 
-source 不能由显示名称推导；同名导入文件永远不对应磁盘文件。内核首次读取时签发 fileId 并记录工作区与路径；替换保存后的同一路径可继续使用该 ID，但每次操作重新验证。删除、移动或来源失效返回错误，不自动追踪到其他路径。规范化路径和平台文件身份共同检查别名；首期拒绝不能可靠识别或隔离的链接及多重链接文件。
+以上类型中的附加类型由 contracts/schema 定义，属于设计草图，不是可运行的 TS 实现。资源源版本是 opaque token；本地源建议对原始字节做摘要，包含 BOM/换行。contentHash 对规范化 LF 正文的 UTF-8 字节计算 SHA-256，不能替代资源重读。
 
-正文必须是有效 Unicode，禁止孤立代理项和 NUL。所有偏移使用 JavaScript 字符串的 UTF-16 单位，不能与 UTF-8 字节、Unicode code point 或展示行号混用，边界不能切断代理对。行号只作展示。
+格式插件负责 UTF-8/BOM/换行编解码；文本插件的 metadata 包含 encoding、bom、newline。混合换行只读，非法 Unicode、孤立代理项、NUL 拒绝；字节和正文上限由内核再检查。纯内存 text/v1 文档只提供基础文本事务，不因文件名结尾 .md/.txt 自动拥有对应类型。
 
-diskRevision 对原始字节计算 SHA-256，包含 BOM 和实际换行，不能与 snapshotHash 互换。撤销后即使正文相同，bufferVersion 也不回退，已有聚焦和提案保守失效，避免旧异步结果重新生效。这比 Demo 仅比较全文快照更严格，应记录为可见行为变更。
+同资源可打开多个独立 documentId，保留 Demo 语义；同一生成计划包含相同 resourceId 的多个目标缓冲区则返回 DUPLICATE_RESOURCE_TARGET。导入的同名文件独立、无资源保存权限。引用恢复产生新文档，不继承旧关注/聚焦/提案。
 
-保存状态分为三个维度：`dirty = content !== savedContent`、I/O 状态 `idle | saving | failed`、磁盘状态 `unknown | matching | externally-changed | missing`。提案状态单独记录，不把已应用等同于已保存。
-
-保存捕获正文、bufferVersion、diskRevision，同一文档只允许一个保存请求在途。成功后更新该次正文的 savedContent 和新 diskRevision；期间继续输入则 dirty 仍为 true。失败不改保存基线。导出仅记录下载已发起，不能宣称浏览器已经写入用户磁盘。
-
-## 2. 引用、关注与聚焦
-
-| 对象 | 关键字段 | 生命周期和校验 |
-| --- | --- | --- |
-| ReferenceSnapshot | referenceId、展示名、来源提示、独立正文/摘要、创建时间 | 不可变，关闭来源继续存在；更新须重建；来源提示不授予文件访问权 |
-| Attention | documentId、scopeRevision | 只允许可编辑且支持 attention 的文档；移除令待确认提案失效，重新加入不恢复旧提案 |
-| FocusGroup | focusId、documentId、role、snapshotId、ranges、instruction、scopeRevision | 一条说明对应多个精确范围；编辑/移除目标聚焦推进 scopeRevision |
-| TabView | tabId、documentId?、paneId、模式、选区与滚动 | 空标签无文档；移动/隐藏只改视图；关闭文档清理关联授权 |
-
-role 从文档可编辑能力派生：可编辑为 target、只读为 reference，不能任意填值绕过校验。target 聚焦只在文档已关注时生效；不自动关注。只读参考聚焦不需要关注。
-
-聚焦须满足：
-
-1. 说明 trim 后非空且不超过 2,000 个 UTF-16 单位，至少一个范围。
-2. `0 <= start < end <= snapshot.content.length` 且原文相等；组内及同文档目标组间不重叠。
-3. 校验文档身份、bufferVersion、完整正文摘要和切片；只比较选区文本不足以证明原位置有效。
-4. 非连续范围不得转成从最小 start 到最大 end 的整体范围，区间原文和空白逐字保留。
-5. 过期后保留创建时正文和说明供查看，不自动套到当前文本；重新选择确认生成新记录。
-6. 结构分块按序拼接须恢复全文及空白；空文件无虚假聚焦范围。
-
-全局 contextRevision 使未提交的发送计划失效。逐文档 scopeRevision 用于应用校验：关闭、移除/重新关注、修改目标聚焦或编辑权限时递增；无关文档变化不必使已完成提案失效。修改请求或引用不改变已有提案，它们保留生成时的来源记录。
-
-## 3. 发送计划与模型任务
+## 3. 输入同步和写入租约
 
 ```ts
-interface ApprovedRange extends SourceRange {
-  focusId: string | null;           // null 表示整文档授权范围
-  instruction: string;
-}
-
-interface PlanTarget {
+interface TextChange { start: number; end: number; insert: string; }
+interface TextTransaction {
   documentId: string;
-  source: DocumentSource;
-  snapshotId: string;
-  snapshotHash: string;
-  bufferVersion: number;
-  scopeRevision: number;
-  ranges: ApprovedRange[];
-}
-
-interface SendItem {
-  itemId: string;
-  purpose: 'target' | 'reference' | 'surrounding-context';
-  sourceId: string;
-  text: string;
-  instruction: string | null;
-}
-
-interface PreparedPlan {
-  protocolVersion: 1;
-  planId: string;
-  planHash: string;
-  contextRevision: number;
-  providerConfigRevision: number;
-  modelProfileId: string;
-  destination: { origin: string; modelId: string };
-  prompt: string;
-  targets: PlanTarget[];
-  sendItems: SendItem[];
-  inputBytes: number;
-  estimatedTokens: number | null;
-  expiresAt: string;
+  leaseId: string;
+  expectedVersion: number;
+  clientTransactionId: string;
+  intent: 'user-input';
+  changes: TextChange[];
+  undoGroupId?: string;
 }
 ```
 
-内核保留计划关联的不可变全文快照用于本地验证。Provider 只接收 sendItems、请求和匿名目标/范围 ID，不得访问未选全文、绝对路径、文件权限或快照仓库。无目标聚焦时整文档形成一个授权范围；空文档使用唯一的 `[0, 0)` 整文档范围，该例外不适用于聚焦组。
+范围是 expectedVersion 正文中的 UTF-16 半开区间 `[start,end)`，允许 start=end 插入；必须有界、互不重叠、不切断代理对。相同位置的重复插入拒绝或先由 SDK 合并成一个 change，不能依赖不稳定排序。内核从后向前应用，返回新版本、变更映射和事件游标。
 
-prepare 会把选中的文档快照交给**本机内核内存**，包括浏览器导入文件，接入时须展示此变化。外部发送清单只含 sendItems 与请求，不含本地校验所用的其余全文。前端先选内容，prepare 后显示最终清单，再 execute；prepare 不调用外部服务。
+内核以文档为单位串行提交。SDK 可先在 UI 显示乐观输入，但同文档只有一个在途事务；后续队列基于乐观投影保存，收到确认后按返回映射重建并使用新版本发送。拒绝时暂停该文档队列，保留临时输入并显示差异，不能把旧全文覆盖到新版本。
 
-planHash 由内核对稳定序列化的计划语义计算，覆盖正文、范围、说明、端点与模型配置版本。确认只提交 planId、返回的 hash 和幂等键，内核执行自己保存的计划，不信任客户端重传的已批准范围。计划归属当前会话，过期或修改后不能继续使用。
+写入租约由内核绑定主体/连接，所有改变内容的命令包括 apply、undo、redo 和可能隐式应用的 save/prepare 都核对租约；普通读视图无写权限。租约需要续期，失联过期后保留文档，旧 lease 不能重用；重新取得租约并重同步后才可处理保留输入。首期不自动抢占活跃租约，不做多人合并。
 
-prepare 时内核自行计算快照摘要和范围原文，校验大小、类型及重叠。workspace 来源须解析已签发 fileId 并验证当前授权和可编辑能力，不能相信客户端的 editable；允许正文包含未保存编辑，因此不要求它等于磁盘正文。import 来源只能作为临时内存文本，不能转换成磁盘权限。浏览器的关注与范围表示这次用户请求的应用级意图，不构成对恶意本地客户端的独立安全隔离。
+IME 组合文本暂留界面，结束时形成事务；保存/生成/关闭须等待组合结束和队列确认。SDK 本地未确认内容不属于内核已保存草稿，导航时需提示；突发断页可能丢失未提交队列，此限制必须可见。需跨刷新恢复这部分输入时单独设计本地恢复存储，不能偷偷把正文存进偏好。
 
-多个目标默认使用各自独立的 Provider 输入，共用显式参考；其他关注文件不自动作为参考发送给当前目标。所有子请求归入同一 runId，默认串行执行，全部完成并校验后才发布整组提案。一个失败则整体任务失败，不发布部分可应用结果；重试可能再次计费，须显示已完成调用状态。
+undo/redo 由内核历史处理，编辑器禁用与其冲突的第二套权威历史；UI 可对尚未发出的临时队列做局部撤销，发出后用内核事务。内核可按受控 undoGroupId 合并连续人工输入，但不得跨提案应用或保存检查点吞并历史。
 
-### 并发与失效
+## 4. 保存与关闭
 
-- 同文档至多属于一个活动任务；按排好序的 ID 一次性预留全部目标，冲突即拒绝，避免交叉占用。不同文档任务受全局并发限制。
-- 发起前按审查策略处理旧 pending，再冻结文档和上下文，不能混用冻结前后快照。
-- 内容/范围变更使相关活动任务过期并请求取消。内核不能直接观察浏览器内存，故应用必须再验版本；取消消息丢失也不能使迟到结果覆盖新内容。
-- 只接受本 session/run 的单调事件序号。流式文字只是进度，最终结构结果通过完整校验前不能应用。
-- 取消通过 AbortSignal 传至 Provider；无法保证撤销服务已收内容或已产生费用，取消后不发布提案。
-- 断线不自动重建任务或重发模型请求；查询已有 runId 恢复显示。内核重启则返回任务丢失，保留浏览器草稿。
+脏状态由当前内容与最后保存快照比较，版本递增不直接等于 dirty。保存捕获确认版本/快照，后续人工输入可继续，成功仅推进那次快照的保存基线；新输入仍 dirty。一个文档一个保存任务，内核对相同资源按 canonical identity 串行写。
 
-任务状态：`prepared → running → validating → completed`，运行/校验阶段可转 `failed | cancelled | expired`。终态不回到 running，重试建新计划。completed 仅指候选有效，不代表应用或保存。
+创建、打开和导入时都建立初始基线快照；另以 source.kind 表示是否存在外部资源，不能用基线存在推导“已写入磁盘”。无改动的导入仍可导出，有改动的 memory/import 关闭时仍需处理脏状态。
 
-## 4. 模型候选与逐文档提案
+保存：权限/插件代次检查 → 类型插件 encode → 内核大小/编码校验 → 资源插件 writeConditional → 平台端口再次校验授权/当前资源版本 → 临时写入与提交 → 返回新资源版本。类型/资源插件只能在本次授权调用内工作。失败保留内容和旧基线，禁止自动 force-save。
 
-```ts
-interface ModelCandidate {
-  message: string;
-  edits: Array<{ documentId: string; rangeId: string; replacement: string }>;
-}
+本地源仍需处理符号链接/junction/硬链接与路径别名、Windows 特殊路径、文件删除/替换、临时文件清理和权限变化。普通文件系统的重读加替换不能承诺防住所有同权限外部进程竞态；平台必须报告 conditional-write 的实际保证和限制，不宣称严格原子 CAS。
 
-interface ChangeProposal {
-  proposalId: string;
-  runId: string;
-  documentId: string;
-  source: DocumentSource;
-  baseBufferVersion: number;
-  baseSnapshotHash: string;
-  baseScopeRevision: number;
-  before: string;
-  after: string;
-  edits: Array<{ rangeId: string; start: number; end: number; replacement: string }>;
-  status: 'pending' | 'applied' | 'discarded' | 'expired';
-  reasonCode: string | null;
-}
-```
+saveId 幂等先于旧版本校验，响应未知时先查询 operation 或复用同键；内核重启后去重记录不可假定存在，重新读资源比较。提交已开始不能简单 cancel 成功，须等待实际结果或标记 unknown 并核实。
 
-Provider 只做协议转换，共同校验器拒绝未知 documentId/rangeId、重复范围、未知结构字段、非法文本和超限输出。replacement 里的文字即使像命令也只是文档内容，不执行。start/end 从本机计划取，不能由模型提供权威偏移。未返回的范围视为不改，空 replacement 明确表示删除已授权范围。
+close.prepare 返回 dirty/pending/任务状态和版本绑定票据；commit 时再次检查。关闭视图不关闭内核文档，显式关闭最后文档清理关注/聚焦并令提案过期，引用快照可保留。会话有未保存数据时内核不得仅因客户端断线自动销毁。宿主关进程仍是持久化前的硬边界。
 
-按原位置从后向前替换，构造完整 after，内部正文的范围外内容逐字保持，编码交给保存适配器。合并多个范围可通过首范围写合并文本、其余所选范围给空串表达，不能删除中间未选内容。before 等于 after 则只记未改动，不建 pending。
+导出返回 artifact，宿主下载只是 accepted，不等于已落盘，不推进原资源的保存基线；可单独记录 lastExportedSnapshotId。
 
-不支持结构化输出的服务可要求严格 JSON 并解析，但仍经共同校验；解析失败只记失败/普通回复，不从 Markdown 猜路径或运行工具。首个真实协议和服务商待选，不宣称一个兼容协议覆盖所有服务。
+## 5. 上下文与精确范围
 
-应用同时校验：来源/文档身份一致，仍打开、可编辑且受关注，没有保存操作在途，scopeRevision、bufferVersion 一致，before 与当前正文相同。通过单个同步编辑事务更新缓冲区、版本与提案状态；撤销内容不能使旧提案恢复 pending。
+- ReferenceSnapshot：添加时从内核文档版本生成不可变副本，来源关闭仍保留；更新须重建。
+- Attention：绑定 documentId，只允许可编辑且具备能力的文档；移除后撤销应用资格，再加入不恢复旧提案。
+- FocusGroup：focusId、documentId、snapshotId、version、role、ranges、instruction、scopeRevision。role 从内核能力派生，可编辑为 target、只读为 reference，不让 UI 自授权限。
 
-| 动作 | accept-on-next-action（兼容默认） | explicit-only（后续可选） |
-| --- | --- | --- |
-| 点击应用/放弃 | 当前文档校验后处理 | 相同 |
-| 实际输入/粘贴/Tab | 单独事务应用有效提案，再输入 | 提示先选择应用/放弃，保留输入意图 |
-| 保存 | 先应用，再捕获正文保存 | 提示先处理提案 |
-| 再次生成该文档修改 | 先处理旧提案，再快照 | 提示先处理提案 |
-| 切换标签/查看对比/改请求 | 不应用 | 不应用 |
+聚焦说明 trim 后非空且限 2,000 UTF-16 单位；每范围包含 rangeId、start、end、original，满足 `0 <= start < end <= content.length`。组内及同文档目标组间不重叠，原文切片一致，整文档版本/摘要有效。非连续范围间原文和空白逐字保留。过期后显示旧快照，不自动套新位置。空文档无虚假 focus。
 
-校验失败则 expired，保留快照；暂时 saving 只拒绝本次操作，结束后重新检查。多个文档始终分别校验和报告，不隐藏部分失败。
+版本变化使聚焦保守过期，即使 undo 后全文相同也不恢复授权。结构块由类型插件提供，内核验证有界、顺序、精确原文和全文覆盖；预览/分页不能改变索引语义。
 
-## 5. 本地 API 草案
+全局 contextRevision 使待执行计划失效；逐文档 scopeRevision 在关注、权限、目标聚焦、类型绑定变化时递增。无关文档变更不必令已完成提案失效；只改请求或引用不改变已有提案，其依据仍是生成时快照。
 
-旧 `/api/files` 和 `/api/file` 兼容期保留，新接口位于 `/api/v1`。生产同源，所有 API 和事件流校验会话、Host 和 Origin；schema 拒绝未知字段，同时限制原始请求体和解码后的正文。
+## 6. 发送计划由内核构建
 
-| 方法和路径 | 输入要点 | 返回或行为 |
-| --- | --- | --- |
-| GET /api/v1/session | 会话令牌 | 会话代号、协议、有效限制、模拟/真实能力 |
-| GET /api/v1/workspaces | 无路径参数 | 本地启动入口已授权根的可读标签 |
-| GET /api/v1/workspaces/:id/entries | 签发的目录 ID、cursor | 分页子项和 fileId，不递归读正文 |
-| GET /api/v1/files/:fileId | 授权文件 ID | 正文、格式、editable、diskRevision |
-| PUT /api/v1/files/:fileId | content、expectedDiskRevision、saveId | 新 revision；旧版本 409 |
-| GET /api/v1/models | 无 | 非敏感配置、能力、credentialConfigured |
-| POST /api/v1/models | 显示名、端点、协议类型、modelId | 校验并保存，不自动联网 |
-| PATCH /api/v1/models/:id | 非敏感字段 | 新 configRevision，旧计划失效 |
-| PUT /api/v1/models/:id/credential | 密钥、session/secure-store 模式 | 仅返回设置状态，禁止请求体日志 |
-| DELETE /api/v1/models/:id/credential | 当前会话 | 清理凭据、使未执行计划失效并请求取消相关活动任务 |
-| POST /api/v1/plans | 所选快照、关注、聚焦、引用、请求、模型 ID | PreparedPlan，只在本机准备 |
-| DELETE /api/v1/plans/:id | 本会话计划 | 取消未执行计划并释放无引用快照 |
-| POST /api/v1/runs | planId、planHash、idempotencyKey | 202 + runId，同键同负载返回同任务 |
-| GET /api/v1/runs/:id | 本会话任务 | 状态、最后 seq、终态结果/错误 |
-| GET /api/v1/runs/:id/events | runId、可选 afterSeq | text/event-stream，单调序号进度 |
-| DELETE /api/v1/runs/:id | 本会话任务 | 幂等取消；已 completed 返回终态 |
+plans.prepare 输入仅含模型实例、请求、上下文选择 ID 和 expected context/version 水位，内核读取自己的快照；不再让客户端上传 before 全文、editable 或自报批准范围。模型插件仅收到批准的 sendItems，不得访问全库。
 
-应用/放弃是浏览器命令，不增加文件写入接口。测试模型连接必须是独立显式操作，接口在首个 Provider 定义后补充，不在填写端点时自动联网。
+PreparedPlan 包含 planId、hash、目标 document/version/scope、rangeIds、快照引用、实际发送文本/说明、endpoint/model 配置版本、使用到的插件绑定、预算和过期时间。confirmationId 绑定同一计划，任何正文/范围/模型端点/插件代次变化都要重建；prepare 不联网。
 
-事件流用 fetch 读取，以便携带 X-Editor-Token 请求头，不将 token 放入 URL。事件为 run.started、text.delta、run.validating、run.completed、run.failed、run.cancelled、run.expired；每条含 runId、seq、type、payload。后端保留有界 replay，afterSeq 太旧返回 EVENT_GAP，前端 GET 任务快照，不重发模型调用。
+全局请求存在则选全部关注目标，有聚焦只改聚焦范围；只有聚焦说明则跳过无聚焦文档。只读聚焦作为参考并优先于显式引用快照；关注文档不会自动成为其他目标的参考。界面显示实际发送/未采用的内容。无聚焦整文档目标允许唯一 `[0,0)` 空文档插入范围。
 
-execute 之前重新检查 providerConfigRevision；任何模型端点、模型标识或凭据变更均推进该版本，使未执行计划失效。已在途请求不能追回发送内容；删除凭据会尽力中止这些请求。创建 run 的幂等检查必须在消费计划之前：同键同负载返回既有任务，同键不同负载返回 IDEMPOTENCY_MISMATCH；同计划换键重发也返回原任务，不重复调用服务。
+按文档独立调用模型，共用显式参考，默认串行；同任务所有候选通过再发布提案，一个失败不发布部分可应用结果。不同文档任务可并行但有限额，同文档只一个活动任务。内核直接观察文档变化并取消/过期相关 run，迟到结果不发布；不用 UI 通知作为唯一防线。
 
-saveId 按会话+文件去重：同 ID 同正文摘要/expectedDiskRevision 返回原响应，负载不同返回 409。断线后先重试同 saveId 或读取磁盘比较，不能把未知响应视为未保存。幂等记录仅当前内核会话有效，重启后不保证恢复。
+状态为 prepared → running → validating → completed，另有 failed/cancelled/expired 终态。流式文本只作进度，完整候选通过才可审查。用户重试建新计划；不因断线自动重调可能计费的服务。
 
-### 错误契约
+## 7. 提案、差异、应用
 
-错误对象含 code、messageKey、requestId、retryable 和白名单 details。前端按 messageKey 本地化，不再匹配中文错误句子。details 不含正文、密钥、绝对路径、完整 Provider 响应或调用栈。
+模型候选只含 message 和 `{documentId,rangeId,replacement}` 数组。内核取计划中的 start/end，拒绝未知目标/范围、重复替换、超限、非法文本和未知结构字段；replacement 内像命令的内容也只是文档文字，不执行。
 
-| HTTP | 示例错误码 | 用户动作 |
-| --- | --- | --- |
-| 400 | INVALID_REQUEST | 修正输入/重建计划 |
-| 401 / 403 | SESSION_INVALID / WORKSPACE_DENIED | 重开启动地址/检查本地授权 |
-| 404 / 410 | FILE_MISSING / PLAN_EXPIRED、RUN_GONE | 保留草稿，重新准备 |
-| 409 | DISK_CONFLICT、STALE_SNAPSHOT、TARGET_BUSY、EVENT_GAP、DUPLICATE_FILE_TARGET、IDEMPOTENCY_MISMATCH | 比较版本、处理任务或读取终态 |
-| 413 / 415 / 422 | LIMIT_EXCEEDED / UNSUPPORTED_TYPE / INVALID_TEXT | 缩小内容或只读查看 |
-| 429 | LOCAL_CAPACITY | 等待本地任务完成 |
-| 502 / 504 | PROVIDER_FAILURE、INVALID_MODEL_OUTPUT / PROVIDER_TIMEOUT | 查看脱敏原因，自行决定重试 |
+未返回范围视为不改；空 replacement 删除该已授权范围。倒序替换构造 after，范围外原文不变；非连续合并可在首范围写合并文本、其余所选范围写空串，不能删除中间未选内容。before=after 不建 pending。
 
-已创建任务的失败由终态报告，GET 状态返回 200；创建前失败用 HTTP 状态。retryable 是建议，不授权自动重发模型请求。
+ChangeProposal 由内核生成，含 proposalId、runId、documentId、baseVersion、baseScopeRevision、before/after 快照、edits、使用的插件版本、status/reason。每文档最多一个 pending，状态为 pending/applied/discarded/expired。
 
-## 6. 限额与内存回收
+proposals.apply 校验租约、身份、文档仍打开可编辑且关注、版本/范围版本、before 一致、保存状态及依赖能力有效，再执行内核事务。compare 返回完整行级左右差异和位置映射，宿主不重写比较逻辑。应用不保存，撤销生成新版本，不复活旧提案。
 
-以下是**建议初值，尚未压测或实现**，M4 前须用虚构夹具验证，不是已交付性能指标。
+accept-on-next-action 是内核策略：实际输入、save 或新生成前处理旧 pending；切换视图、查看比较、改请求不触发。隐式应用和人工输入的两步事务需用安全位置映射，含糊则整体拒绝并保留输入；详见 kernel-api.md。explicit-only 可后续提供，不暗改 Demo 默认。
 
-| 限制 | 初值 | 处理 |
-| --- | --- | --- |
-| 单文件原始/保存字节 | 延续 2 MiB | 读写边界均校验 |
-| 单目标生成前后正文 | 延续 40,000 UTF-16 单位且不超过 400 行 | 前后均校验，不截断 |
-| 单次目标数 / 全局活动任务 | 8 / 2 | 同文档活动任务上限 1 |
-| 计划快照正文总量 | 去重后 4 MiB UTF-8 | 聚焦和引用复用 snapshotId |
-| 原始 JSON 请求体 | 32 MiB | 容纳转义膨胀，解码后仍校验 |
-| 单次 Provider 输入/输出 | 输入正文 1 MiB、结果 1 MiB；另受 token 预算限制 | 有 tokenizer 时估算；未知窗口必须配置上限 |
-| 准备计划有效期 | 5 分钟 | 执行前检查，过期回收 |
-| 单任务总时间 | 120 秒 | 超时停止后续调用 |
-| 事件 replay / 终态缓存 | 每任务 1 MiB / 15 分钟 | gap 后查终态，过期释放 |
-| 内核会话内容缓存 | 64 MiB | 回收无引用/过期数据，活动对象超额则拒绝新任务 |
-| 浏览器提案和引用快照 | 64 MiB | 不删除脏缓冲区或 pending，提示用户清理后继续 |
+## 8. 插件绑定与缓存
 
-同一计划不要重复持有 ranges.original 与全文的大对象副本，可在传输/展示时派生。配额须覆盖快照、after、候选和事件，默认不持久化正文。
+文档、分块、预览、计划、提案都记录所使用的 binding/generation。插件失效使相关派生能力不可用、冻结操作，不能把同名新版的输出当旧结果。停用/升级按占用处理，非正文派生数据可重新计算，但不能悄悄重新 decode 草稿。
 
-## 7. 内置类型与 Provider 端口
+正文在内核，故插件崩溃不丢文档。Host SDK 的投影不是第二个源；事件重连采用 snapshot+cursor，一旦 gap 重取，不用客户端旧正文恢复覆盖内核。错误信息和事件正文受同会话访问控制。
 
-文件类型纯模块提供 matches(metadata)、capabilities、blocks(snapshot, cursor)；web 预览适配器处理安全 DOM。分块返回可验证的原文索引，不能先格式化再报偏移。未声明的能力均为 false。
+## 9. 限额与隐私
 
-Provider 端口接收已批准输入、内核提供的凭据解析能力、AbortSignal 和限额，返回有界异步事件及最终 ModelCandidate。模拟 Provider 标记 isSimulation，不联网；真实 Provider 运行于内核，不装载任意外部代码。流式、结构化结果、token 估算分别声明，不支持时明确报错。
+首期建议初值，须在实施时验证，不是已交付性能指标：单文件 2 MiB；单目标模拟前后 40,000 UTF-16 单位/400 行；聚焦结构每页 200 块；计划去重快照 4 MiB；单计划 8 目标、全局 2 活动 run；准备计划 5 分钟、执行总时限 120 秒；事件 replay 每会话 1 MiB；内核正文/历史/提案缓存建议 64 MiB。模型 token、输出、插件 CPU/时间及预览树还需单独限额。
 
-## 8. 契约必测案例
+限额必须统计正文、undo、引用、before/after、计划、插件结果和事件，不只算 HTTP 字节。共享不可变快照按引用计数回收；脏缓冲区、pending 和已承诺历史不得静默删除，达到限额拒绝新操作并提示用户处理。会话持有脏文档时不可因缓存 TTL 删除。
 
-- 同名不同来源、同磁盘文件多缓冲区、保存中输入、保存响应丢失。
-- emoji/代理对、BOM、各种换行、尾空白、纯空白、空文档整文档替换、混合换行只读。
-- 非连续合并保留中间原文，过期/重叠/伪造范围、伪造角色、未关注、移除后重新关注。
-- 全局请求与聚焦目标选择、只读聚焦参考优先、其他关注文件不自动成为参考。
-- 半成品流、未知 rangeId、重复 edits、越权目标、超限、取消后迟到、断线和 gap。
-- 显式/隐式应用、IME/粘贴、切换标签不应用、来源关闭、撤销后版本不回退。
-- 路径和链接逃逸、端点重定向/DNS 地址改变、凭据不可读回、错误日志不含正文。
+偏好和插件非敏感配置可存本地，正文/会话历史默认内存；可选持久恢复另设开关、格式迁移、保留期和清理。凭据用宿主安全存储或会话内存，无明文回退。默认日志仅 ID/计数/耗时/错误，正文、提示词、路径、凭据不得落日志。
+
+## 10. 契约验收
+
+无 DOM 客户端与网页/嵌入宿主完成同一事务序列；覆盖乱序/重复响应、丢失响应、event gap、租约过期、IME、保存中输入、插件故障/升级、同名导入、同资源双缓冲区、undo 后版本、非连续聚焦、旧模型结果、取消、资源冲突与内存限额。当前 Demo 的测试基线只是迁移依据，不是这些新契约已实现的证据。
