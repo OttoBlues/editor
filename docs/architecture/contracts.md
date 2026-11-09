@@ -1,6 +1,6 @@
-# 数据与状态契约 v0.2
+# 数据与状态契约 v0.3
 
-状态：**待实施设计**。替代 v0.1 中浏览器拥有业务缓冲区、浏览器执行应用/放弃、客户端上传全文创建计划的方案。内核是权威状态所有者，接口见 [Kernel API](kernel-api.md)，扩展点见 [插件协议](plugin-system.md)。
+状态：**待实施设计**。延续 v0.2 的内核权威状态，新增独立视图绑定与源选区；插件页面不成为第二个文档仓库。接口见 [Kernel API](kernel-api.md)，扩展点见 [插件协议](plugin-system.md)，页面契约见 [文档视图](document-views.md)。
 
 ## 1. 身份与所有权
 
@@ -12,6 +12,9 @@
 | pluginId / contributionId | manifest；内核注册 | 安装/启停管理，调用绑定 pluginGeneration |
 | workspaceId / resourceId | 内核结合资源插件签发 | 只能定位已授权资源，不接受任意路径代替 |
 | documentId | 内核 | 一份独立缓冲区；关闭后重新打开是新 ID |
+| viewId | 内核绑定、宿主挂载 | 每个插件页面实例一个；绑定文档/插件代次/连接，关闭不删除文档 |
+| selectionId | 内核校验后签发 | 文档快照中的临时范围，受主体/视图限制；不等于聚焦或授权 |
+| writerId / leaseId | 可信输入端身份 / 内核租约 | 页面对应 viewId；无 UI 客户端或宿主业务命令另绑定，始终同文档单写 |
 | tabId / paneId | 宿主 UI | 纯视图标识，不作文件/编辑授权 |
 | snapshotId / proposalId / planId / runId | 内核 | 会话隔离、不可猜测、按引用和限额保留 |
 
@@ -57,6 +60,16 @@ interface TextSnapshot {
   contentHash: string;
   typeBinding: PluginBinding | null;
 }
+
+interface ViewBinding {
+  viewId: string;
+  documentId: string;
+  connectionId: string;
+  viewBinding: PluginBinding;  // 与 DocumentState.typeBinding 独立
+  runtimeKind: 'web-module/v1';
+  modeId: string;
+  allowedActions: string[];   // 内核推导，不信任页面自报
+}
 ```
 
 以上类型中的附加类型由 contracts/schema 定义，属于设计草图，不是可运行的 TS 实现。资源源版本是 opaque token；本地源建议对原始字节做摘要，包含 BOM/换行。contentHash 对规范化 LF 正文的 UTF-8 字节计算 SHA-256，不能替代资源重读。
@@ -64,6 +77,8 @@ interface TextSnapshot {
 格式插件负责 UTF-8/BOM/换行编解码；文本插件的 metadata 包含 encoding、bom、newline。混合换行只读，非法 Unicode、孤立代理项、NUL 拒绝；字节和正文上限由内核再检查。纯内存 text/v1 文档只提供基础文本事务，不因文件名结尾 .md/.txt 自动拥有对应类型。
 
 同资源可打开多个独立 documentId，保留 Demo 语义；同一生成计划包含相同 resourceId 的多个目标缓冲区则返回 DUPLICATE_RESOURCE_TARGET。导入的同名文件独立、无资源保存权限。引用恢复产生新文档，不继承旧关注/聚焦/提案。
+
+一个文档可有多个 ViewBinding，共享权威正文；不把 viewId 放进文件身份、脏状态或格式元数据。typeBinding 决定格式，viewBinding 决定页面；换视图不重新解码、不换保存编码器，也不因展示方式改变 scopeRevision。视图故障只撤销对应绑定，除非同包的无界面能力也故障。
 
 ## 3. 输入同步和写入租约
 
@@ -84,9 +99,13 @@ interface TextTransaction {
 
 内核以文档为单位串行提交。SDK 可先在 UI 显示乐观输入，但同文档只有一个在途事务；后续队列基于乐观投影保存，收到确认后按返回映射重建并使用新版本发送。拒绝时暂停该文档队列，保留临时输入并显示差异，不能把旧全文覆盖到新版本。
 
-写入租约由内核绑定主体/连接，所有改变内容的命令包括 apply、undo、redo 和可能隐式应用的 save/prepare 都核对租约；普通读视图无写权限。租约需要续期，失联过期后保留文档，旧 lease 不能重用；重新取得租约并重同步后才可处理保留输入。首期不自动抢占活跃租约，不做多人合并。
+写入租约由内核绑定主体/连接和 writerId，所有改变内容的命令包括 apply、undo、redo 和可能隐式应用的 save/prepare 都核对租约；普通读视图无写权限。同宿主多个视图也不共用 writerId；页面写入与 viewId 绑定，宿主全局操作通过该拥有者的输入协调器及租约执行。租约需要续期，失联过期后保留文档，旧 lease 不能重用；重新取得租约并重同步后才可处理保留输入。首期不自动抢占活跃租约，不做多人合并。
+
+没有活跃输入拥有者时，获准的宿主保存/应用/撤销可申请短期 host-command 租约，完成后释放，不赋予阅读视图输入权限。有活跃拥有者则先协调，不能抢占；文档自身只读时内容修改仍拒绝。页面只读模式与文档访问权限分别判断，避免阅读模式阻断正常的宿主业务操作。
 
 IME 组合文本暂留界面，结束时形成事务；保存/生成/关闭须等待组合结束和队列确认。SDK 本地未确认内容不属于内核已保存草稿，导航时需提示；突发断页可能丢失未提交队列，此限制必须可见。需跨刷新恢复这部分输入时单独设计本地恢复存储，不能偷偷把正文存进偏好。
+
+切换插件视图/模式以及应用/撤销同样经过输入协调；prepareToLeave 回报 ready 后还需宿主验证队列和版本。切视图时先确认旧输入、新视图只读就绪，再交接租约；失败保留旧视图，不能以重挂载覆盖草稿。普通人工编辑不要求 Attention；自动命令/模型候选仍使用提案规则，不能伪装成 user-input。
 
 undo/redo 由内核历史处理，编辑器禁用与其冲突的第二套权威历史；UI 可对尚未发出的临时队列做局部撤销，发出后用内核事务。内核可按受控 undoGroupId 合并连续人工输入，但不得跨提案应用或保存检查点吞并历史。
 
@@ -104,6 +123,8 @@ saveId 幂等先于旧版本校验，响应未知时先查询 operation 或复�
 
 close.prepare 返回 dirty/pending/任务状态和版本绑定票据；commit 时再次检查。关闭视图不关闭内核文档，显式关闭最后文档清理关注/聚焦并令提案过期，引用快照可保留。会话有未保存数据时内核不得仅因客户端断线自动销毁。宿主关进程仍是持久化前的硬边界。
 
+views.close 只撤销对应通道、租约、订阅和临时 selection，不删除已创建的引用、关注或聚焦；documents.close.commit 成功后通知全部视图卸载。视图重连生成新绑定，旧页面的迟到调用拒绝。
+
 导出返回 artifact，宿主下载只是 accepted，不等于已落盘，不推进原资源的保存基线；可单独记录 lastExportedSnapshotId。
 
 ## 5. 上下文与精确范围
@@ -111,6 +132,10 @@ close.prepare 返回 dirty/pending/任务状态和版本绑定票据；commit �
 - ReferenceSnapshot：添加时从内核文档版本生成不可变副本，来源关闭仍保留；更新须重建。
 - Attention：绑定 documentId，只允许可编辑且具备能力的文档；移除后撤销应用资格，再加入不恢复旧提案。
 - FocusGroup：focusId、documentId、snapshotId、version、role、ranges、instruction、scopeRevision。role 从内核能力派生，可编辑为 target、只读为 reference，不让 UI 自授权限。
+
+临时 ValidatedSelection 是 snapshotId/version 上的精确源范围，不是上述持久上下文。selections.create 检查文档归属、范围、非重叠和 Unicode 边界，内核从快照提取原文；context.focus.create/update 接收 selectionId + instruction，或无 UI 客户端直接提交同等数据走同一校验。创建时仍核对当前版本与能力。
+
+视图中的图形块/字段须映射到精确 text/v1 范围；显示标签、DOM 位置和渲染文本不构成源索引。过期或关闭视图后 selection 不能继续作为新修改聚焦的输入。FocusGroup 建立后持有自己的快照/范围，删除临时选区不影响它。局部高亮不自动增加 Attention；已有聚焦卡片的 reveal 只是定位，过期内容显示快照详情。
 
 聚焦说明 trim 后非空且限 2,000 UTF-16 单位；每范围包含 rangeId、start、end、original，满足 `0 <= start < end <= content.length`。组内及同文档目标组间不重叠，原文切片一致，整文档版本/摘要有效。非连续范围间原文和空白逐字保留。过期后显示旧快照，不自动套新位置。空文档无虚假 focus。
 
@@ -122,7 +147,7 @@ close.prepare 返回 dirty/pending/任务状态和版本绑定票据；commit �
 
 plans.prepare 输入仅含模型实例、请求、上下文选择 ID 和 expected context/version 水位，内核读取自己的快照；不再让客户端上传 before 全文、editable 或自报批准范围。模型插件仅收到批准的 sendItems，不得访问全库。
 
-PreparedPlan 包含 planId、hash、目标 document/version/scope、rangeIds、快照引用、实际发送文本/说明、endpoint/model 配置版本、使用到的插件绑定、预算和过期时间。confirmationId 绑定同一计划，任何正文/范围/模型端点/插件代次变化都要重建；prepare 不联网。
+PreparedPlan 包含 planId、hash、目标 document/version/scope、rangeIds、快照引用、实际发送文本/说明、endpoint/model 配置版本、使用到的插件绑定、预算和过期时间。confirmationId 绑定同一计划，相关正文/范围/模型端点/实际依赖插件代次变化都要重建；单纯切换页面不影响它，prepare 不联网。
 
 全局请求存在则选全部关注目标，有聚焦只改聚焦范围；只有聚焦说明则跳过无聚焦文档。只读聚焦作为参考并优先于显式引用快照；关注文档不会自动成为其他目标的参考。界面显示实际发送/未采用的内容。无聚焦整文档目标允许唯一 `[0,0)` 空文档插入范围。
 
@@ -144,7 +169,7 @@ accept-on-next-action 是内核策略：实际输入、save 或新生成前处�
 
 ## 8. 插件绑定与缓存
 
-文档、分块、预览、计划、提案都记录所使用的 binding/generation。插件失效使相关派生能力不可用、冻结操作，不能把同名新版的输出当旧结果。停用/升级按占用处理，非正文派生数据可重新计算，但不能悄悄重新 decode 草稿。
+文档、视图、分块、预览、计划、提案都记录实际使用的 binding/generation。类型/资源/模型绑定属于相应业务依赖；纯视图绑定不是模型计划或提案的必备依赖，换页面不自动使其失效。同包整体升级改变了业务依赖时仍按原规则过期。插件失效使相关派生能力不可用、冻结操作，不能把同名新版的输出当旧结果。停用/升级按占用处理，非正文派生数据可重新计算，但不能悄悄重新 decode 草稿。
 
 正文在内核，故插件崩溃不丢文档。Host SDK 的投影不是第二个源；事件重连采用 snapshot+cursor，一旦 gap 重取，不用客户端旧正文恢复覆盖内核。错误信息和事件正文受同会话访问控制。
 
@@ -158,4 +183,4 @@ accept-on-next-action 是内核策略：实际输入、save 或新生成前处�
 
 ## 10. 契约验收
 
-无 DOM 客户端与网页/嵌入宿主完成同一事务序列；覆盖乱序/重复响应、丢失响应、event gap、租约过期、IME、保存中输入、插件故障/升级、同名导入、同资源双缓冲区、undo 后版本、非连续聚焦、旧模型结果、取消、资源冲突与内存限额。当前 Demo 的测试基线只是迁移依据，不是这些新契约已实现的证据。
+无 DOM 客户端与网页/嵌入宿主完成同一事务序列；覆盖乱序/重复响应、丢失响应、event gap、租约过期、IME、保存中输入、插件故障/升级、同名导入、同资源双缓冲区、undo 后版本、非连续聚焦、旧模型结果、取消、资源冲突与内存限额。新增视图/选区越权、同连接多视图单写、切换失败与队列排空、关闭视图不删除上下文、视图绑定不误使业务计划过期的验收。当前 Demo 的测试基线只是迁移依据，不是这些新契约已实现的证据。
